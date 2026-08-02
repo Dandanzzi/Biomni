@@ -1,420 +1,216 @@
-<p align="center">
-  <img src="./figs/biomni_logo.png" alt="Biomni Logo" width="600px" />
-</p>
+# Biomni Synthetic Lethality Toolkit
 
-<p align="center">
-<a href="https://join.slack.com/t/biomnigroup/shared_invite/zt-3avks4913-dotMBt8D_apQnJ3mG~ak6Q">
-<img src="https://img.shields.io/badge/Join-Slack-4A154B?style=for-the-badge&logo=slack" alt="Join Slack" />
-</a>
-<a href="https://biomni.stanford.edu">
-<img src="https://img.shields.io/badge/Try-Web%20UI-blue?style=for-the-badge" alt="Web UI" />
-</a>
-<a href="https://x.com/ProjectBiomni">
-<img src="https://img.shields.io/badge/Follow-on%20X-black?style=for-the-badge&logo=x" alt="Follow on X" />
-</a>
-<a href="https://www.linkedin.com/company/project-biomni">
-<img src="https://img.shields.io/badge/Follow-LinkedIn-0077B5?style=for-the-badge&logo=linkedin" alt="Follow on LinkedIn" />
-</a>
-<a href="https://www.biorxiv.org/content/10.1101/2025.05.30.656746v1">
-<img src="https://img.shields.io/badge/Read-Paper-green?style=for-the-badge" alt="Paper" />
-</a>
-</p>
+**암 맥락별 합성치사(Synthetic Lethality) 후보 발굴부터 반증 검사까지 — Biomni 호환 도구 생태계**
 
+DepMap CRISPR 의존성 데이터로 후보를 발굴하고, PubMed 문헌과 STRING 단백질 네트워크로 교차 검증한 뒤,
+**"이 후보가 정말 driver 변이 때문인가"를 능동적으로 반증**하여 실험 가능한 evidence dossier를 생성합니다.
 
+> 이 도구는 "점수를 잘 내는 예측기"가 아니라 **"어떤 후보를 왜 먼저 검증해야 하는가"에 답하는 의사결정 계층**을 목표로 합니다.
+> 그래서 지지 근거만 모으지 않고, pan-essentiality·파라로그 손실·lineage 교란·문헌상 반증을 적극적으로 찾아 후보를 탈락시킵니다.
 
-# Biomni: A General-Purpose Biomedical AI Agent
+---
 
-## Overview
+## 기술 스택
 
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
+![pandas](https://img.shields.io/badge/pandas-2.x-150458?logo=pandas&logoColor=white)
+![NumPy](https://img.shields.io/badge/NumPy-2.x-013243?logo=numpy&logoColor=white)
+![SciPy](https://img.shields.io/badge/SciPy-1.15-8CAAE6?logo=scipy&logoColor=white)
+![Requests](https://img.shields.io/badge/Requests-HTTP-2C5BB4)
+![Ruff](https://img.shields.io/badge/lint-Ruff-D7FF64?logo=ruff&logoColor=black)
 
-Biomni is a general-purpose biomedical AI agent designed to autonomously execute a wide range of research tasks across diverse biomedical subfields. By integrating cutting-edge large language model (LLM) reasoning with retrieval-augmented planning and code-based execution, Biomni helps scientists dramatically enhance research productivity and generate testable hypotheses.
+![Biomni](https://img.shields.io/badge/Biomni-A1%20Agent-4B8BBE)
+![DepMap](https://img.shields.io/badge/Data-DepMap%2FCCLE-E4405F)
+![cBioPortal](https://img.shields.io/badge/API-cBioPortal-1F6FEB)
+![NCBI](https://img.shields.io/badge/API-NCBI%20Entrez-336791)
+![STRING](https://img.shields.io/badge/API-STRING--DB-05998B)
 
+| 구분 | 사용 기술 |
+|---|---|
+| 통계 분석 | Welch t-test, Benjamini–Hochberg FDR, Cohen's d, 벡터화 Pearson 상관 |
+| 데이터 | DepMap CRISPR gene effect (Chronos), DepMap Model, DepMap 발현 (log2 TPM+1) |
+| 외부 API | cBioPortal (CCLE 변이 콜), NCBI Entrez E-utilities (esearch/efetch), STRING-DB v12 |
+| 에이전트 | Biomni A1 (LangGraph 기반), `module2api` 도구 레지스트리 |
+| 품질 관리 | Ruff (lint + format), 명시적 provenance 기록 |
 
-## Quick Start
+---
 
-### Installation
+## 프로젝트 구조
 
-Our software environment is massive and we provide a single setup.sh script to setup.
-Follow this [file](biomni_env/README.md) to setup the env first.
+```
+biomni/
+├── tool/
+│   ├── synthetic_lethality.py                  # 핵심 구현 (5개 도구 + 내부 헬퍼)
+│   └── tool_description/
+│       └── synthetic_lethality.py              # 에이전트용 도구 스키마 (JSON 형태)
+├── utils.py                                    # read_module2api() 필드 목록에 모듈 등록
+docs/
+└── synthetic_lethality/
+    └── README.md                               # 이 문서
+run_agent.py                                    # 췌장암 KRAS 원스톱 실행 (후보 → 문헌 → 반증 → 실험계획)
+run_sl_agent.py                                 # 단계별 실행 / A1 에이전트 자연어 실행
+data/biomni_data/data_lake/                     # DepMap 스냅샷 (아래 "데이터 준비" 참조)
+```
 
-Then activate the environment E1:
+도구 등록은 Biomni 규약을 그대로 따릅니다. `biomni/utils.py`의 `read_module2api()` 필드 목록에
+`"synthetic_lethality"` 한 줄이 추가되어 있어, `A1` 에이전트 초기화 시 5개 도구가 자동으로 레지스트리에 올라갑니다.
+
+---
+
+## 핵심 기능
+
+### 5개 도구
+
+| 도구 | 역할 | 주요 출력 |
+|---|---|---|
+| `discover_synthetic_lethal_candidates` | DepMap 세포주를 변이/야생형으로 층화해 전 유전자 Welch t-test | 효과크기, p/q값, 선택도, pan-essential 지표, QC 경고 |
+| `validate_sl_candidates_with_pubmed` | NCBI Entrez esearch + efetch로 초록 XML 파싱 | 논문 목록(PMID/연도/저널/초록), 0–100 문헌 지지 점수 |
+| `analyze_ppi_network_for_sl` | STRING-DB 직접 edge + 공유 파트너 + 기능 enrichment | 근거 채널별 점수, 기능적 근접성 분류 |
+| `check_dependency_confounders` | **반증 전용** — 교란요인이 의존성을 설명하는지 검사 | co-dependency, 발현 바이오마커, 파라로그 스캔, lineage 집중도 |
+| `generate_sl_evidence_dossier` | 위 단계를 통합 | 신뢰등급, 지지/반대 근거, 최소 검증 실험, Go/Hold/No-go |
+
+### 설계 원칙
+
+1. **수치 판단은 코드가, 서술은 LLM이** — 통계·임계값·QC는 모두 명시적 규칙으로 계산하며 LLM은 계획과 설명만 담당합니다.
+2. **모든 실행에 provenance 기록** — 데이터 파일·스냅샷 날짜·행/열 수·표본 수·API 엔드포인트·통계 가정을 함께 반환합니다.
+3. **신규성과 반증을 구분** — 문헌이 없는 후보는 중립 기준점에서 시작하고, **명시적 반증 문헌만** 감점합니다.
+   ("문헌 없음"은 "반증됨"이 아닙니다.)
+4. **능동적 반증 탐색** — PubMed 질의를 3계층(질환 특이 / SL 특이 / **반증 특이**)으로 나눠, 지지 근거뿐 아니라
+   비재현·비필수성 보고를 일부러 찾아냅니다.
+
+---
+
+## 설치 및 실행
+
+### 1. 설치
 
 ```bash
-conda activate biomni_e1
+git clone https://github.com/Dandanzzi/Biomni.git
+cd Biomni
+pip install -e .
 ```
 
-then install the biomni official pip package:
+추가 의존성은 없습니다 — `pandas`, `numpy`, `scipy`, `requests`는 Biomni 기본 의존성에 포함되어 있습니다.
+
+> Biomni 본체는 Python 3.11 이상을 요구하지만, 이 툴킷 모듈 자체는 3.10에서도 동작하도록 작성되어 있습니다.
+
+### 2. 데이터 준비
+
+`data/biomni_data/data_lake/`에 DepMap 스냅샷이 필요합니다. Biomni `A1` 초기화 시 자동 다운로드되며,
+[DepMap 포털](https://depmap.org/portal/download/)에서 직접 받아도 됩니다.
+
+| 파일 | 용도 | 필수 여부 |
+|---|---|---|
+| `DepMap_CRISPRGeneEffect.csv` | 유전자 의존성 (Chronos) | 필수 |
+| `DepMap_Model.csv` | 세포주 계통/암종 주석 | 필수 |
+| `DepMap_OmicsExpressionProteinCodingGenesTPMLogp1.csv` | 발현 바이오마커 상관 | `check_dependency_confounders`에만 필요 |
+
+변이 상태는 별도 파일 없이 **cBioPortal CCLE API**에서 자동 조회합니다.
+`DepMap_OmicsSomaticMutations.csv`가 데이터 레이크에 있으면 그쪽을 우선 사용하며,
+`mutation_csv_path`로 직접 지정할 수도 있습니다 (`ModelID, HugoSymbol[, ProteinChange]` 컬럼).
+
+인터넷 접속이 필요한 구간: cBioPortal(변이), NCBI Entrez(문헌), STRING(네트워크).
+통계 단계만 오프라인으로 돌리려면 `--skip-pubmed`와 로컬 변이 테이블을 사용하세요.
+
+### 3. 실행
+
+**원스톱 실행 (췌장암 KRAS 기본값)**
 
 ```bash
-pip install biomni --upgrade
+python run_agent.py
 ```
 
-For the latest update, install from the github source version, or do:
+후보 발굴 → 실험 우선순위 선별 → PubMed 검증 → **교란요인 반증 검사** → 최우선 후보의 실험 프로토콜까지 한 번에 출력합니다.
 
 ```bash
-pip install git+https://github.com/snap-stanford/Biomni.git@main
+python run_agent.py --mutation TP53 --cancer-type "Lung"   # 다른 암종/driver
+python run_agent.py --skip-pubmed                          # 문헌 검증 생략
+python run_agent.py --csv my_candidates.csv                # 후보 표 저장 경로
 ```
 
-Lastly, configure your API keys using one of the following methods:
-
-<details>
-<summary>Click to expand</summary>
-
-#### Option 1: Using .env file (Recommended)
-
-Create a `.env` file in your project directory:
+**단계별 실행 / 에이전트 실행**
 
 ```bash
-# Copy the example file
-cp .env.example .env
-
-# Edit the .env file with your actual API keys
+python run_sl_agent.py --mode direct    # 각 도구의 원시 출력을 단계별로 확인
+python run_sl_agent.py --mode agent     # A1 에이전트가 자연어 질문에서 직접 도구 체인을 계획 (LLM API 키 필요)
 ```
 
-Your `.env` file should look like:
-
-```env
-# Required: Anthropic API Key for Claude models
-ANTHROPIC_API_KEY=your_anthropic_api_key_here
-
-# Optional: OpenAI API Key (if using OpenAI models)
-OPENAI_API_KEY=your_openai_api_key_here
-
-# Optional: Azure OpenAI API Key (if using Azure OpenAI models)
-OPENAI_API_KEY=your_azure_openai_api_key
-OPENAI_ENDPOINT=https://your-resource-name.openai.azure.com/
-
-# Optional: AI Studio Gemini API Key (if using Gemini models)
-GEMINI_API_KEY=your_gemini_api_key_here
-
-# Optional: groq API Key (if using groq as model provider)
-GROQ_API_KEY=your_groq_api_key_here
-
-# Optional: Set the source of your LLM for example:
-#"OpenAI", "AzureOpenAI", "Anthropic", "Ollama", "Gemini", "Bedrock", "Groq", "Custom"
-LLM_SOURCE=your_LLM_source_here
-
-# Optional: AWS Bedrock Configuration (if using AWS Bedrock models)
-AWS_BEARER_TOKEN_BEDROCK=your_bedrock_api_key_here
-AWS_REGION=us-east-1
-
-# Optional: Custom model serving configuration
-# CUSTOM_MODEL_BASE_URL=http://localhost:8000/v1
-# CUSTOM_MODEL_API_KEY=your_custom_api_key_here
-
-# Optional: Biomni data path (defaults to ./data)
-# BIOMNI_DATA_PATH=/path/to/your/data
-
-# Optional: Timeout settings (defaults to 600 seconds)
-# BIOMNI_TIMEOUT_SECONDS=600
-```
-
-#### Option 2: Using shell environment variables
-
-Alternatively, configure your API keys in bash profile `~/.bashrc`:
-
-```bash
-export ANTHROPIC_API_KEY="YOUR_API_KEY"
-export OPENAI_API_KEY="YOUR_API_KEY" # optional if you just use Claude
-export OPENAI_ENDPOINT="https://your-resource-name.openai.azure.com/" # optional unless you are using Azure
-export AWS_BEARER_TOKEN_BEDROCK="YOUR_BEDROCK_API_KEY" # optional for AWS Bedrock models
-export AWS_REGION="us-east-1" # optional, defaults to us-east-1 for Bedrock
-export GEMINI_API_KEY="YOUR_GEMINI_API_KEY" #optional if you want to use a gemini model
-export GROQ_API_KEY="YOUR_GROQ_API_KEY" # Optional: set this to use models served by Groq
-export LLM_SOURCE="Groq" # Optional: set this to use models served by Groq
-
-
-```
-</details>
-
-
-#### ⚠️ Known Package Conflicts
-
-Some Python packages are not installed by default in the Biomni environment due to dependency conflicts. If you need these features, you must install the packages manually and may need to uncomment relevant code in the codebase. See the up-to-date list and details in [docs/known_conflicts.md](./docs/known_conflicts.md).
-
-### Basic Usage
-
-Once inside the environment, you can start using Biomni:
+**파이썬에서 직접 호출**
 
 ```python
-from biomni.agent import A1
-
-# Initialize the agent with data path, Data lake will be automatically downloaded on first run (~11GB)
-agent = A1(path='./data', llm='claude-sonnet-4-20250514')
-
-# Execute biomedical tasks using natural language
-agent.go("Plan a CRISPR screen to identify genes that regulate T cell exhaustion, generate 32 genes that maximize the perturbation effect.")
-agent.go("Perform scRNA-seq annotation at [PATH] and generate meaningful hypothesis")
-agent.go("Predict ADMET properties for this compound: CC(C)CC1=CC=C(C=C1)C(C)C(=O)O")
-```
-
-#### Controlling Datalake Loading
-
-By default, Biomni automatically downloads the datalake files (~11GB) when you create an agent. You can control this behavior:
-
-```python
-# Skip automatic datalake download (faster initialization)
-agent = A1(path='./data', llm='claude-sonnet-4-20250514', expected_data_lake_files = [])
-```
-
-This is useful for:
-- Faster testing and development
-- Environments with limited storage or bandwidth
-- Cases where you only need specific tools that don't require datalake files
-If you plan on using Azure for your model, always prefix the model name with azure- (e.g. llm='azure-gpt-4o').
-
-### Gradio Interface
-
-Launch an interactive web UI for Biomni:
-
-```python
-from biomni.agent import A1
-
-agent = A1(path='./data', llm='claude-sonnet-4-20250514')
-agent.launch_gradio_demo()
-```
-
-**Installation:**
-```bash
-pip install "gradio>=5.0,<6.0"
-```
-
-**Note:** Biomni's Gradio interface currently requires Gradio 5.x due to API changes in Gradio 6.0. If you have Gradio 6.x installed, you may need to downgrade.
-
-**Options:**
-- `share=True` - Create a public shareable link
-- `server_name="127.0.0.1"` - Localhost only (default: "0.0.0.0")
-- `require_verification=True` - Require access code (default code: "Biomni2025")
-
-The interface will be available at `http://localhost:7860`
-
-### Configuration Management
-
-Biomni includes a centralized configuration system that provides flexible ways to manage settings. You can configure Biomni through environment variables, runtime modifications, or direct parameters.
-
-```python
-from biomni.config import default_config
-from biomni.agent import A1
-
-# RECOMMENDED: Modify global defaults for consistency
-default_config.llm = "gpt-4"
-default_config.timeout_seconds = 1200
-
-# All agents AND database queries use these defaults
-agent = A1()  # Everything uses gpt-4, 1200s timeout
-```
-
-**Note**: Direct parameters to `A1()` only affect that agent's reasoning, not database queries. For consistent configuration across all operations, use `default_config` or environment variables.
-
-For detailed configuration options, see the **[Configuration Guide](docs/configuration.md)**.
-
-### PDF Generation
-
-Generate PDF reports of execution traces:
-
-```python
-from biomni.agent import A1
-
-# Initialize agent
-agent = A1(path='./data', llm='claude-sonnet-4-20250514')
-
-# Run your task
-agent.go("Your biomedical task here")
-
-# Save conversation history as PDF
-agent.save_conversation_history("my_analysis_results.pdf")
-```
-
-**PDF Generation Dependencies:**
-<details>
-<summary>Click to expand</summary>
-For optimal PDF generation, install one of these packages:
-
-```bash
-# Option 1: WeasyPrint (recommended for best layout control)
-# Conda environment (recommended)
-conda install weasyprint
-
-# System installation
-brew install weasyprint  # macOS
-apt install weasyprint   # Linux
-
-# See [WeasyPrint Installation Guide](https://doc.courtbouillon.org/weasyprint/stable/first_steps.html) for detailed instructions.
-
-# Option 2: markdown2pdf (Rust-based, fast and reliable)
-# macOS:
-brew install theiskaa/tap/markdown2pdf
-
-# Windows/Linux (using Cargo):
-cargo install markdown2pdf
-
-# Or download prebuilt binaries from:
-# https://github.com/theiskaa/markdown2pdf/releases/latest
-
-# Option 3: Pandoc (pip installation)
-pip install pandoc
-```
-</details>
-
-## MCP (Model Context Protocol) Support
-
-Biomni supports MCP servers for external tool integration:
-
-```python
-from biomni.agent import A1
-
-agent = A1()
-agent.add_mcp(config_path="./mcp_config.yaml")
-agent.go("Find FDA active ingredient information for ibuprofen")
-```
-
-**Built-in MCP Servers:**
-For usage and implementation details, see the [MCP Integration Documentation](docs/mcp_integration.md) and examples in [`tutorials/examples/add_mcp_server/`](tutorials/examples/add_mcp_server/) and [`tutorials/examples/expose_biomni_server/`](tutorials/examples/expose_biomni_server/).
-
-
-## Biomni-R0
-
-**Biomni-R0** is our first reasoning model for biology, built on Qwen-32B with reinforcement learning from agent interaction data. It's designed to excel at tool use, multi-step reasoning, and complex biological problem-solving through iterative self-correction.
-
-- 🤗 Model: [biomni/Biomni-R0-32B-Preview](https://huggingface.co/biomni/Biomni-R0-32B-Preview)
-- 📝 Technical Report: [biomni.stanford.edu/blog/biomni-r0-technical-report](https://biomni.stanford.edu/blog/biomni-r0-technical-report)
-
-To use Biomni-R0 for agent reasoning while keeping database queries on your usual provider (recommended), run a local SGLang server and pass the model to `A1()` directly.
-
-1) Launch SGLang with Biomni-R0:
-
-```bash
-python -m sglang.launch_server --model-path RyanLi0802/Biomni-R0-Preview --port 30000 --host 0.0.0.0 --mem-fraction-static 0.8 --tp 2 --trust-remote-code --json-model-override-args '{"rope_scaling":{"rope_type":"yarn","factor":1.0,"original_max_position_embeddings":32768}, "max_position_embeddings": 131072}'
-```
-
-2) Point the agent to your SGLang endpoint for reasoning:
-
-```python
-from biomni.config import default_config
-from biomni.agent import A1
-
-# Database queries (indexes, retrieval, etc.) use default_config
-default_config.llm = "claude-3-5-sonnet-20241022"
-default_config.source = "Anthropic"
-
-# Agent reasoning uses Biomni-R0 served via SGLang (OpenAI-compatible API)
-agent = A1(
-    llm="biomni/Biomni-R0-32B-Preview",
-    source="Custom",
-    base_url="http://localhost:30000/v1",
-    api_key="EMPTY",
+from biomni.tool.synthetic_lethality import (
+    discover_synthetic_lethal_candidates,
+    check_dependency_confounders,
+    generate_sl_evidence_dossier,
 )
 
-agent.go("Plan a CRISPR screen to identify genes regulating T cell exhaustion")
+# 1) 후보 발굴
+print(discover_synthetic_lethal_candidates("Pancreatic Cancer", "KRAS", top_n=15))
+
+# 2) 실험 전 반증 검사
+print(check_dependency_confounders("KRAS", ["VPS4A", "NDE1", "SREBF1"]))
+
+# 3) 전체 파이프라인을 한 번에
+print(generate_sl_evidence_dossier("Pancreatic Cancer", "KRAS", top_n=5))
 ```
 
-## Biomni-Eval1
+**Biomni 에이전트에 장착**
 
-**Biomni-Eval1** is a comprehensive evaluation benchmark for assessing biological reasoning capabilities across diverse tasks. It contains **433 instances** spanning **10 biological reasoning tasks**, from gene identification to disease diagnosis.
-
-**Tasks Included:**
-- GWAS causal gene identification (3 variants)
-- Lab bench Q&A (2 variants)
-- Patient gene detection
-- Screen gene retrieval
-- GWAS variant prioritization
-- Rare disease diagnosis
-- CRISPR delivery method selection
-
-**Resources:**
-- 🤗 Dataset: [biomni/Eval1](https://huggingface.co/datasets/biomni/Eval1)
-- 💻 Quick Start:
 ```python
-from biomni.eval import BiomniEval1
+from biomni.agent import A1
 
-evaluator = BiomniEval1()
-score = evaluator.evaluate('gwas_causal_gene_opentargets', 0, 'BRCA1')
+agent = A1(path="./data", llm="claude-sonnet-4-20250514")
+agent.go("췌장암에서 KRAS 변이 기반 합성치사 후보를 찾고 논문으로 검증해 줘")
 ```
 
+---
 
-## 📚 Know-How Library
+## 실행 예시: 왜 반증 검사가 필요한가
 
-Biomni includes a **Know-How Library** — a curated collection of best practices, protocols, and troubleshooting guides for biomedical techniques. These documents are automatically retrieved by the A1 agent when relevant to provide domain expertise and practical knowledge.
+췌장암 KRAS 분석 실행 결과(DepMap 로컬 스냅샷, 세포주 47종 = KRAS 변이 40 / 야생형 4 / 미프로파일 3):
 
-**Features:**
-- Automatic retrieval based on query relevance
-- Metadata tracking (authors, affiliations, licensing, commercial use)
-- Compatible with commercial mode (filters non-commercial content)
+통계 필터를 통과한 상위 후보
 
-### 📝 Contributing Know-How Documents
+| 유전자 | 변이군 | 야생형 | 차이 | q | 변이 의존 |
+|---|---|---|---|---|---|
+| VPS4A | −0.661 | −0.179 | −0.482 | 0.005 | 52% |
+| NDE1 | −0.649 | −0.308 | −0.341 | 0.047 | 62% |
+| SREBF1 | −0.547 | −0.215 | −0.332 | 0.029 | 42% |
 
-We're actively seeking community contributions to expand our Know-How Library! Share your expertise by contributing:
-
-- **Lab protocols** (cell culture, flow cytometry, western blotting, etc.)
-- **Analysis best practices** (NGS workflows, microscopy techniques, etc.)
-- **Troubleshooting guides** (common issues and solutions)
-- **Experimental design guidelines** (sample size, controls, validation)
-- **Domain-specific knowledge** (drug formulation, animal models, clinical trials, etc.)
-
-Know-how documents should be practical, succinct, and include proper attribution. Use [this know-how](know_how/single_cell_annotation.md) as an example.
-
-**To contribute:** Create a markdown file following our template and submit a pull request.
-
-## 🤝 Contributing to Biomni
-
-Biomni is an open-science initiative that thrives on community contributions. We welcome:
-
-- **🔧 New Tools**: Specialized analysis functions and algorithms
-- **📊 Datasets**: Curated biomedical data and knowledge bases
-- **💻 Software**: Integration of existing biomedical software packages
-- **📋 Benchmarks**: Evaluation datasets and performance metrics
-- **📚 Know-How**: Best practices, protocols, and domain expertise
-- **📚 Misc**: Tutorials, examples, and use cases
-- **🔧 Update existing tools**: many current tools are not optimized - fix and replacements are welcome!
-
-Check out this **[Contributing Guide](CONTRIBUTION.md)** on how to contribute to the Biomni ecosystem.
-
-If you have particular tool/database/software in mind that you want to add, you can also submit to [this form](https://forms.gle/nu2n1unzAYodTLVj6) and the biomni team will implement them.
-
-## 🔬 Call for Contributors: Help Build Biomni-E2
-
-Biomni-E1 only scratches the surface of what’s possible in the biomedical action space.
-
-Now, we’re building **Biomni-E2** — a next-generation environment developed **with and for the community**.
-
-We believe that by collaboratively defining and curating a shared library of standard biomedical actions, we can accelerate science for everyone.
-
-**Join us in shaping the future of biomedical AI agent.**
-
-- **Contributors with significant impact** (e.g., 10+ significant & integrated tool contributions or equivalent) will be **invited as co-authors** on our upcoming paper in a top-tier journal or conference.
-- **All contributors** will be acknowledged in our publications.
-- More contributor perks...
-
-Let’s build it together.
-
-
-## Tutorials and Examples
-
-**[Biomni 101](./tutorials/biomni_101.ipynb)** - Basic concepts and first steps
-
-More to come!
-
-## 🌐 Web Interface
-
-Experience Biomni through our no-code web interface at **[biomni.stanford.edu](https://biomni.stanford.edu)**.
-
-[![Watch the video](https://img.youtube.com/vi/E0BRvl23hLs/maxresdefault.jpg)](https://youtu.be/E0BRvl23hLs)
-
-
-## Important Note
-- Security warning: Currently, Biomni executes LLM-generated code with full system privileges. If you want to use it in production, please use in isolated/sandboxed environments. The agent can access files, network, and system commands. Be careful with sensitive data or credentials.
-- This release was frozen as of April 15 2025, so it differs from the current web platform.
-- Biomni itself is Apache 2.0-licensed, but certain integrated tools, databases, or software may carry more restrictive commercial licenses. Review each component carefully before any commercial use.
-
-## Cite Us
+**통계상 1순위였던 VPS4A는 `check_dependency_confounders`에서 탈락합니다.**
 
 ```
-@article{huang2025biomni,
-  title={Biomni: A General-Purpose Biomedical AI Agent},
-  author={Huang, Kexin and Zhang, Serena and Wang, Hanchen and Qu, Yuanhao and Lu, Yingzhou and Roohani, Yusuf and Li, Ryan and Qiu, Lin and Zhang, Junze and Di, Yin and others},
-  journal={bioRxiv},
-  pages={2025--05},
-  year={2025},
-  publisher={Cold Spring Harbor Laboratory}
-}
+PARALOG ALERT: VPS4B expression (r=+0.315, rank 6 of 19199) predicts this dependency
+far better than KRAS (rank 16167) - this looks like a paralog-loss dependency.
+
+VERDICT: CONFOUNDED - the dependency tracks VPS4B expression, not KRAS status.
 ```
+
+VPS4A 의존성을 설명하는 것은 KRAS가 아니라 파라로그 **VPS4B의 발현**이며(KRAS 발현은 19,199개 중 16,167위),
+췌장암 KRAS 야생형 4개 중 3개가 우연히 VPS4B 고발현 세포주였기 때문에 KRAS 효과처럼 보인 것입니다.
+반증 검사 없이 진행했다면 KRAS가 아닌 VPS4B 손실 표현형을 실험하게 됩니다.
+
+**문헌 검증에서도 같은 원리가 작동합니다.** 반증 전용 질의 계층을 추가하기 전 STK33은 89/100 "WELL SUPPORTED"였지만,
+추가 후 [PMID 21742770](https://pubmed.ncbi.nlm.nih.gov/21742770/) (*STK33 kinase activity is nonessential in
+KRAS-dependent cancer cells*)을 회수해 **SUPPORTED BUT CONTESTED**로 강등됩니다.
+
+---
+
+## 알려진 한계
+
+이 도구는 가설 생성기이며, 아래 한계를 리포트에 명시적으로 출력합니다.
+
+- **단일 perturbation 상관 근거**입니다. 이중 녹아웃·isogenic 검증 데이터가 아니므로 확정된 SL 상호작용이 아닙니다.
+- **췌장암 KRAS 야생형 세포주는 DepMap 전체에서 4종뿐**이라 p값이 불안정합니다. `cancer_type="pan-cancer"`로 검정력을 높여 재현되는지 확인하세요.
+- 단일 DepMap release에서 파생된 결과는 **독립 증거로 중복 계산하지 않습니다** (Sanger Project Score 등 외부 스크린 교차검증 권장).
+- 문헌 점수는 **문서화 정도이지 진위가 아닙니다.** 키워드 기반 반증 탐지는 무관한 문맥에서 오탐할 수 있으므로 CONTESTED 판정 시 표시된 PMID를 직접 확인하세요.
+- 세포주 의존성은 환자에서의 therapeutic window를 보장하지 않습니다.
+
+---
+
+## 참고
+
+- Huang K, et al. *Biomni: A General-Purpose Biomedical AI Agent.* bioRxiv (2025)
+- DepMap Consortium — [Cancer Dependency Map portal](https://depmap.org/portal/)
+- Neggers JE, et al. *Synthetic lethal interaction between the ESCRT paralog enzymes VPS4A and VPS4B.* Cell Reports (2020)
+- Scholl C, et al. *Synthetic lethal interaction between oncogenic KRAS dependency and STK33 suppression.* Cell (2009) — 및 Babij C, et al. Cancer Research (2011)의 반증 보고
