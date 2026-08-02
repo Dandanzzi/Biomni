@@ -1548,7 +1548,12 @@ Each library is listed with its description to help you understand its functiona
                 self._execution_results.append(execution_entry)
 
                 observation = f"\n<observation>{result}</observation>"
-                state["messages"].append(AIMessage(content=observation.strip()))
+                # Append the tool observation as a HumanMessage so the conversation
+                # ends with a user turn. Newer Claude models (e.g. claude-sonnet-4-6)
+                # reject a trailing assistant message with a 400 "does not support
+                # assistant message prefill" error; this also keeps the user/assistant
+                # turns properly alternating.
+                state["messages"].append(HumanMessage(content=observation.strip()))
 
             return state
 

@@ -861,6 +861,7 @@ def read_module2api():
         "pharmacology",
         "physiology",
         "synthetic_biology",
+        "synthetic_lethality",
         "systems_biology",
         "support_tools",
         "database",

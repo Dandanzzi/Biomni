@@ -1,0 +1,23 @@
+현재 run_agent.py 실행 시 발생하는 404 NotFoundError의 정확한 원인과 해결 방법을 찾았어. 코드를 이 내용에 맞게 수정해 줘.
+
+[에러 원인 파악]
+1. Biomni의 이중 LLM 설정: Biomni는 메인 추론용(A1)과 내부 DB 질의용(default_config) LLM을 따로 사용하는데, 내부 질의용으로 지원 종료된 모델(claude-3-haiku-20241022)이 기본값으로 호출되면서 404 에러가 발생한 거야.
+2. 모델 서비스 종료: 우리가 기존에 설정했던 모델들도 2026년 6월 15일부로 Anthropic API에서 서비스가 종료되었어.
+
+[수정 요청 사항]
+내 run_agent.py 파일을 열어서 현재 활성 모델인 `claude-sonnet-4-6`을 메인 에이전트와 내부 DB 질의 양쪽 모두에 적용하도록 코드를 수정해 줘.
+
+[적용할 코드 형태 (참고)]
+from biomni.config import default_config
+from biomni.agent import A1
+
+default_config.llm = "claude-sonnet-4-6"
+default_config.source = "Anthropic"
+
+agent = A1(
+    path="./data",
+    llm="claude-sonnet-4-6",
+    source="Anthropic",
+)
+
+위 내용을 바탕으로 내 파일의 코드를 알맞게 덮어쓰기 하고, 직접 파이썬 파일을 실행시켜서 404 에러가 사라지고 정상적으로 에이전트가 작동하는지 끝까지 테스트해 줘.
