@@ -1,104 +1,201 @@
-import pandas as pd
-from scipy.stats import ttest_ind
+"""췌장암 KRAS 합성치사 후보 발굴 -> 실제 유전자명 확인 -> PubMed 검증 -> 실험 대상 선정.
 
-# ==========================================
-# 1. 합성치사 분석 툴(도구) 정의
-# ==========================================
-def find_synthetic_lethality_candidates(cancer_type: str, target_mutation: str) -> str:
-    """
-    특정 암종(예: Pancreatic Cancer)에서 특정 유전자 돌연변이(예: KRAS) 유무에 따라,
-    생존에 치명적인 영향을 받는 합성치사(Synthetic Lethality) 후보 유전자를 T-test로 찾습니다.
-    """
-    print(f"🔬 [에이전트 내부 실행 중] {cancer_type} 세포주에서 {target_mutation} 변이 기반 합성치사 분석 시작...\n")
-    
-    try:
-        # [데이터 준비 단계: 가상 샘플 데이터]
-        cell_lines_data = {
-            'Cell_Line': ['MIA-PaCa-2', 'PANC-1', 'BxPC-3', 'AsPC-1', 'Capan-2', 'HPAC'],
-            'Cancer_Type': ['Pancreatic Cancer'] * 6,
-            f'{target_mutation}_Mutated': [True, True, False, True, False, False]
-        }
-        df_cell = pd.DataFrame(cell_lines_data)
-        
-        dependency_data = {
-            'Cell_Line': ['MIA-PaCa-2', 'PANC-1', 'BxPC-3', 'AsPC-1', 'Capan-2', 'HPAC'],
-            'Gene_A_Score': [-0.1, -0.2, -0.1, -0.3, -0.2, -0.1], 
-            'Gene_B_Score': [-1.5, -1.8, -0.1, -1.6, -0.2, -0.1], # KRAS 돌연변이 시 치명적
-            'Gene_C_Score': [-0.9, -0.8, -1.0, -0.7, -0.9, -0.8]  
-        }
-        df_dep = pd.DataFrame(dependency_data)
-        
-        # 데이터 병합
-        df_merged = pd.merge(df_cell, df_dep, on='Cell_Line')
-        
-        # [분석 단계: T-test 통계 검증]
-        mutated_group = df_merged[df_merged[f'{target_mutation}_Mutated'] == True]
-        wt_group = df_merged[df_merged[f'{target_mutation}_Mutated'] == False]
-        
-        results = []
-        genes_to_test = ['Gene_A_Score', 'Gene_B_Score', 'Gene_C_Score']
-        
-        for gene in genes_to_test:
-            stat, p_value = ttest_ind(mutated_group[gene], wt_group[gene])
-            
-            mut_mean = mutated_group[gene].mean()
-            wt_mean = wt_group[gene].mean()
-            
-            if mut_mean < wt_mean and p_value < 0.05:
-                results.append(
-                    f"- 타겟 유전자: {gene.replace('_Score', '')}\n"
-                    f"  * {target_mutation} 변이 세포주 평균 점수: {mut_mean:.2f} (치명적)\n"
-                    f"  * {target_mutation} 정상 세포주 평균 점수: {wt_mean:.2f} (안전함)\n"
-                    f"  * p-value: {p_value:.4f} (통계적 유의성 확보)"
-                )
-        
-        # [결과 반환]
-        if results:
-            return f"✅ [{cancer_type}] {target_mutation} 변이 기반 합성치사 분석 결과:\n" + "\n".join(results)
-        else:
-            return f"[{cancer_type}]에서 {target_mutation} 변이와 유의미한 합성치사 관계를 가진 유전자를 찾지 못했습니다."
-            
-    except Exception as e:
-        return f"데이터 분석 중 오류가 발생했습니다: {str(e)}"
+이전 버전은 Gene_A / Gene_B / Gene_C 라는 가상의 이름과 손으로 적은 의존성 점수를 사용했기 때문에
+"Gene_B"에 대응하는 실제 유전자가 존재하지 않았고, 그 결과로는 문헌 검증도 실험도 할 수 없었습니다.
+이 스크립트는 동일한 질문을 실제 DepMap CRISPR 데이터로 다시 풀어서, 실험실에서 바로 주문할 수 있는
+HUGO 유전자 심볼을 출력합니다.
 
-# ==========================================
-# 2. 에이전트 셋팅 (임시)
-# (실제 Biomni 라이브러리를 사용 중이라면 이 부분을 원래 코드로 교체하세요)
-# ==========================================
-class MockBiomniAgent:
-    def __init__(self):
-        self.tools = []
-        
-    def add_tool(self, tool_function):
-        self.tools.append(tool_function)
-        print(f"⚙️  툴 등록 완료: {tool_function.__name__}")
-        
-    def run(self, user_query: str):
-        # 챗봇이 질문을 이해하고 방금 만든 툴을 꺼내 쓰는 과정을 시뮬레이션
-        if "췌장암" in user_query and "KRAS" in user_query:
-            # 에이전트가 툴을 실행하고 그 결과를 반환함
-            return find_synthetic_lethality_candidates(cancer_type="Pancreatic Cancer", target_mutation="KRAS")
-        else:
-            return "질문에 맞는 분석 툴을 찾지 못했습니다."
+    python run_agent.py                      # 췌장암 / KRAS (기본값)
+    python run_agent.py --mutation TP53      # 다른 driver 변이
+    python run_agent.py --skip-pubmed        # 통계 단계만 (오프라인)
+"""
 
-# 에이전트 생성 및 툴 장착
-agent = MockBiomniAgent()
-agent.add_tool(find_synthetic_lethality_candidates)
+import argparse
+import os
+
+from biomni.tool.synthetic_lethality import (
+    check_dependency_confounders,
+    discover_synthetic_lethal_candidates,
+    validate_sl_candidates_with_pubmed,
+)
+
+# 실험으로 넘길 후보를 고르는 기준. LLM 판단이 아니라 명시적 규칙으로 고정한다.
+MAX_PAN_ESSENTIAL_PCT = 40.0  # 전체 세포주에서 이 비율 이상 필수면 치료 window 확보가 어렵다
+MAX_Q_VALUE = 0.10  # 다중검정 보정 후에도 살아남아야 한다
+MIN_MUTANT_DEPENDENT_PCT = 30.0  # 변이 세포주 중 실제로 의존하는 비율
 
 
-# ==========================================
-# 3. 실행 스위치 (이 부분이 있어야 터미널에서 작동합니다!)
-# ==========================================
+def select_experiment_targets(table, top_k: int = 3):
+    """통계 결과표에서 wet-lab 검증 우선순위를 규칙 기반으로 선별한다."""
+    eligible = table[
+        (table["pct_all_lines_dependent"] < MAX_PAN_ESSENTIAL_PCT)
+        & (table["q_value"] < MAX_Q_VALUE)
+        & (table["pct_mutant_dependent"] >= MIN_MUTANT_DEPENDENT_PCT)
+    ].copy()
+    # 선택도(변이 세포주 의존 비율 - 전체 세포주 의존 비율)가 클수록 genotype 특이적이다.
+    eligible["selectivity_gap"] = eligible["pct_mutant_dependent"] - eligible["pct_all_lines_dependent"]
+    eligible = eligible.sort_values(["selectivity_gap", "effect_difference"], ascending=[False, True])
+    return eligible.head(top_k), len(eligible)
+
+
+def parse_confounder_verdicts(report: str) -> dict:
+    """교란요인 리포트에서 유전자별 판정(CONFOUNDED / DRIVER-CONSISTENT 등)을 추출한다."""
+    verdicts = {}
+    current = None
+    for line in report.splitlines():
+        if line.startswith("### "):
+            current = line[4:].strip()
+        elif current and line.strip().startswith("VERDICT:"):
+            verdicts[current] = line.split("VERDICT:", 1)[1].strip()
+            current = None
+    return verdicts
+
+
+def print_experiment_plan(gene: str, row, mutation: str) -> None:
+    print("=" * 78)
+    print(f"실험 계획: {mutation} 변이 의존적 {gene} 합성치사 검증")
+    print("=" * 78)
+    print(f"  가설: {mutation} 변이 췌장암 세포는 {gene} 결손에 선택적으로 취약하다.")
+    print(
+        f"  통계 근거: 변이 세포주 gene effect {row['mutant_mean_effect']:.3f} vs "
+        f"야생형 {row['wildtype_mean_effect']:.3f} (차이 {row['effect_difference']:.3f}, "
+        f"q={row['q_value']:.4f}, 변이 세포주의 {row['pct_mutant_dependent']:.0f}%가 의존)"
+    )
+    print("")
+    print("  1) 세포주 패널 (DepMap에서 실제로 스크리닝된 계열)")
+    print(f"     - {mutation} 변이군: MIA PaCa-2 (G12C), PANC-1 (G12D), AsPC-1 (G12D), CFPAC-1 (G12V)")
+    print(f"     - {mutation} 야생형군: BxPC-3")
+    print("     * 췌장암 KRAS 야생형 세포주는 DepMap 전체에서 4종뿐이므로, 야생형군만으로 대조하지 말고")
+    print("       isogenic 계통(HPNE/HPDE + KRAS G12D 도입, 또는 KRAS degron 계열)을 함께 사용할 것.")
+    print("")
+    print("  2) 단일 perturbation")
+    print(f"     - {gene}에 대해 서로 다른 표적 서열의 sgRNA 2종 + non-targeting 대조")
+    print("     - 판독: 10일 CellTiter-Glo 생존율, caspase-3/7, colony formation")
+    print(f"     - 반드시 western blot 또는 RT-qPCR로 {gene} 녹아웃 효율을 확인 (miss 시 위음성)")
+    print("")
+    print("  3) 특이성 확인 (on-target 검증)")
+    print(f"     - sgRNA 저항성 {gene} cDNA 재발현 시 표현형이 회복되어야 한다 (rescue)")
+    print(f"     - 회복되지 않으면 off-target 효과이므로 {gene}은 기각")
+    print("")
+    print("  4) 판정 기준")
+    print("     - 변이군 대 야생형군 생존율 차이 >= 2배, p < 0.05 (two-way ANOVA의 genotype x KO 교호작용)")
+    print("     - sgRNA 2종에서 모두 재현, rescue로 회복")
+    print("     - 비형질전환 세포(HPNE 등)에서 동등한 의존성이 나오면 therapeutic window 없음 -> No-go")
+    print("")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="췌장암 합성치사 후보 발굴 및 실험 대상 선정")
+    parser.add_argument("--cancer-type", default="Pancreatic Cancer")
+    parser.add_argument("--mutation", default="KRAS")
+    parser.add_argument("--top-n", type=int, default=15, help="통계 단계에서 보고할 후보 수")
+    parser.add_argument("--skip-pubmed", action="store_true", help="문헌 검증 생략 (오프라인 실행)")
+    parser.add_argument("--csv", default="sl_candidates.csv", help="후보 표를 저장할 경로")
+    args = parser.parse_args()
+
+    print("=" * 78)
+    print(f"사용자 질문: {args.cancer_type}에서 {args.mutation} 변이 기반 합성치사 후보를 찾아줘")
+    print("=" * 78)
+    print("")
+
+    # ---- 1단계: 실제 DepMap 데이터로 후보 발굴 -------------------------------------------
+    report = discover_synthetic_lethal_candidates(
+        cancer_type=args.cancer_type,
+        target_mutation=args.mutation,
+        top_n=args.top_n,
+        output_csv_path=args.csv,
+    )
+    print(report)
+
+    if report.startswith("FAILURE") or not os.path.exists(args.csv):
+        print("\n후보 발굴에 실패했습니다. 위의 실패 사유를 확인하세요.")
+        return
+
+    import pandas as pd
+
+    table = pd.read_csv(args.csv)
+    if table.empty:
+        print("\n통계 필터를 통과한 후보가 없습니다.")
+        return
+
+    # ---- 2단계: 실험 우선순위 선별 ---------------------------------------------------------
+    targets, n_eligible = select_experiment_targets(table)
+    print("")
+    print("=" * 78)
+    print("실험 우선순위 선별")
+    print("=" * 78)
+    print(
+        f"  선별 기준: pan-essential < {MAX_PAN_ESSENTIAL_PCT:.0f}%, q < {MAX_Q_VALUE}, "
+        f"변이 세포주 의존 비율 >= {MIN_MUTANT_DEPENDENT_PCT:.0f}%"
+    )
+    print(f"  전체 후보 {len(table)}개 중 {n_eligible}개 통과")
+    if targets.empty:
+        print("  기준을 통과한 후보가 없습니다. 통계 근거만으로 실험을 시작하지 마세요.")
+        return
+
+    print("")
+    print(f"{'순위':<6}{'유전자':<12}{'변이군':>9}{'야생형':>9}{'차이':>9}{'q':>9}{'변이의존':>9}{'전체의존':>9}")
+    print("-" * 78)
+    for index, (_, row) in enumerate(targets.iterrows(), start=1):
+        print(
+            f"{index:<6}{row['gene']:<12}{row['mutant_mean_effect']:>9.3f}{row['wildtype_mean_effect']:>9.3f}"
+            f"{row['effect_difference']:>9.3f}{row['q_value']:>9.4f}"
+            f"{row['pct_mutant_dependent']:>8.0f}%{row['pct_all_lines_dependent']:>8.0f}%"
+        )
+
+    candidate_genes = targets["gene"].tolist()
+    print("")
+    print(f"=> 문헌 검증 및 실험 대상: {', '.join(candidate_genes)}")
+    print("   (이전 버전의 'Gene_B'와 달리 모두 실존하는 HUGO 심볼이며 그대로 sgRNA 주문에 사용할 수 있습니다)")
+    print("")
+
+    # ---- 3단계: PubMed 검증 ----------------------------------------------------------------
+    if not args.skip_pubmed:
+        print(
+            validate_sl_candidates_with_pubmed(
+                disease=args.cancer_type,
+                mutated_gene=args.mutation,
+                candidate_genes=candidate_genes,
+                max_papers_per_gene=6,
+                include_abstracts=False,
+            )
+        )
+        print("")
+
+    # ---- 4단계: 교란요인 반증 검사 ---------------------------------------------------------
+    # 실험비를 쓰기 전에, 이 의존성이 정말 driver 변이 때문인지 아니면 파라로그 손실이나
+    # lineage 구성 때문인지 확인한다.
+    confounder_report = check_dependency_confounders(
+        target_mutation=args.mutation,
+        candidate_genes=candidate_genes,
+        cancer_type=args.cancer_type,
+    )
+    print(confounder_report)
+    verdicts = parse_confounder_verdicts(confounder_report)
+
+    # ---- 5단계: 최우선 후보의 실험 프로토콜 ------------------------------------------------
+    clean = [g for g in candidate_genes if not verdicts.get(g, "").startswith("CONFOUNDED")]
+    dropped = [g for g in candidate_genes if g not in clean]
+    print("")
+    if dropped:
+        print("=" * 78)
+        print("교란요인으로 실험 대상에서 제외된 후보")
+        print("=" * 78)
+        for gene in dropped:
+            print(f"  {gene}: {verdicts[gene]}")
+        print("")
+
+    if not clean:
+        print("모든 후보가 교란요인으로 설명됩니다. 실험을 시작하기 전에 해당 바이오마커로")
+        print("층화한 뒤 discover_synthetic_lethal_candidates를 다시 실행하세요.")
+        print(f"\n전체 후보 표: {args.csv}")
+        return
+
+    top = targets[targets["gene"] == clean[0]].iloc[0]
+    print_experiment_plan(top["gene"], top, args.mutation)
+    print(f"교란요인 판정: {verdicts.get(top['gene'], 'N/A')}")
+    print(f"전체 후보 표: {args.csv}")
+
+
 if __name__ == "__main__":
-    print("\n" + "="*50)
-    
-    question = "췌장암에서 KRAS 돌연변이와 합성치사 관계인 후보 유전자를 찾아줘"
-    print(f"🧑‍🔬 사용자 질문: {question}\n")
-    print("🤖 에이전트가 데이터 분석을 시작합니다... (잠시만 기다려주세요)\n")
-    
-    # 에이전트에게 질문을 던지고 답변을 받아옴
-    answer = agent.run(question)
-    
-    print("================== [에이전트 분석 결과] ==================")
-    print(answer)
-    print("=========================================================\n")
+    main()

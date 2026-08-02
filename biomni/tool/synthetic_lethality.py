@@ -9,7 +9,10 @@ lethality research (e.g. "KRAS-mutant pancreatic cancer"):
    the NCBI Entrez E-utilities API (esearch + efetch abstract parsing).
 3. ``analyze_ppi_network_for_sl`` - protein-protein interaction validation via the
    STRING-DB REST API.
-4. ``generate_sl_evidence_dossier`` - orchestrates 1-3 into a single evidence dossier
+4. ``check_dependency_confounders`` - tests whether a candidate's dependency is really
+   explained by the driver mutation or by a confounder (paralog loss, lineage, expression
+   biomarker), before any wet-lab commitment.
+5. ``generate_sl_evidence_dossier`` - orchestrates 1-4 into a single evidence dossier
    with Go / Hold / No-go recommendations.
 
 Design notes
@@ -48,6 +51,7 @@ PAN_ESSENTIAL_FRACTION = 0.80
 # Module level caches so that the ~400 MB DepMap matrices are read only once per session.
 _DEPMAP_CACHE: dict = {}
 _MUTATION_CACHE: dict = {}
+_EXPRESSION_CACHE: dict = {}
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +138,32 @@ def _load_depmap(data_lake_path: str | None = None) -> dict:
         ],
     }
     _DEPMAP_CACHE[resolved] = bundle
+    return bundle
+
+
+def _load_expression(data_lake_path: str | None = None) -> dict:
+    """Load and cache the DepMap protein-coding expression matrix (log2 TPM+1)."""
+    import pandas as pd
+
+    resolved = _resolve_data_lake(data_lake_path)
+    if resolved in _EXPRESSION_CACHE:
+        return _EXPRESSION_CACHE[resolved]
+
+    path = os.path.join(resolved, "DepMap_OmicsExpressionProteinCodingGenesTPMLogp1.csv")
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Expression matrix not found at {path}; confounder analysis needs it.")
+
+    expression = pd.read_csv(path, index_col=0)
+    expression.index.name = "ModelID"
+    bundle = {
+        "expression": expression,
+        "gene_columns": {c.split(" (")[0].strip().upper(): c for c in expression.columns},
+        "provenance": (
+            f"Expression: {_file_provenance(path)}; {expression.shape[0]} models x {expression.shape[1]} genes "
+            "(log2 TPM+1)"
+        ),
+    }
+    _EXPRESSION_CACHE[resolved] = bundle
     return bundle
 
 
@@ -1243,7 +1273,262 @@ def analyze_ppi_network_for_sl(
 
 
 # ---------------------------------------------------------------------------
-# Tool 4: integrated evidence dossier
+# Tool 4: confounder / falsification analysis
+# ---------------------------------------------------------------------------
+def check_dependency_confounders(
+    target_mutation: str,
+    candidate_genes: list[str] | str,
+    cancer_type: str = "pan-cancer",
+    data_lake_path: str | None = None,
+    mutation_csv_path: str | None = None,
+    top_biomarkers: int = 5,
+) -> str:
+    """Test whether a candidate dependency is really driven by the mutation or by a confounder.
+
+    A gene can look synthetic-lethal with a driver mutation simply because the two groups differ in
+    something else. This tool runs three falsification checks per candidate across the whole DepMap
+    panel and reports whether the driver hypothesis survives:
+
+    1. Co-dependency: correlation between the candidate's and the driver's gene-effect profiles.
+       Genuine members of the driver's pathway co-vary with it (e.g. RAF1 with KRAS, r about 0.39).
+    2. Expression biomarker: the genes whose expression best predicts the candidate's dependency.
+       If the top biomarker is the candidate's own paralog rather than anything driver-related, the
+       dependency is a paralog-loss effect, not synthetic lethality with the driver (the classic
+       VPS4A/VPS4B case).
+    3. Lineage effect: how concentrated the dependency is in single lineages, which is the usual
+       source of a spurious mutant-versus-wild-type difference.
+
+    Parameters
+    ----------
+    target_mutation : str
+        The driver gene whose mutation defined the candidates, e.g. "KRAS".
+    candidate_genes : list[str] | str
+        Candidate genes to scrutinise; a list, or a comma/whitespace separated string.
+    cancer_type : str, optional
+        Restrict the lineage effect summary to this context; correlations always use all lineages
+        so that the sample size is adequate (default: "pan-cancer").
+    data_lake_path : str, optional
+        Directory holding the DepMap files (default: "./data/biomni_data/data_lake").
+    mutation_csv_path : str, optional
+        Optional mutation table overriding the default mutation source.
+    top_biomarkers : int, optional
+        Number of top expression biomarkers to report per candidate (default: 5).
+
+    Returns
+    -------
+    str
+        A research log with, per candidate, the driver co-dependency, the strongest expression
+        biomarkers of the dependency, the paralog check, the lineage concentration, and a verdict of
+        DRIVER-CONSISTENT / CONFOUNDED / UNEXPLAINED.
+
+    """
+    import numpy as np
+    import pandas as pd
+    from scipy import stats
+
+    genes = _parse_gene_list(candidate_genes)
+    if not genes:
+        return "FAILURE: no candidate genes supplied."
+
+    try:
+        bundle = _load_depmap(data_lake_path)
+        expression_bundle = _load_expression(data_lake_path)
+    except FileNotFoundError as e:
+        return f"FAILURE: {e}"
+
+    gene_effect = bundle["gene_effect"]
+    effect_columns = bundle["gene_columns"]
+    expression = expression_bundle["expression"]
+    driver = target_mutation.upper()
+
+    log = [
+        "=" * 78,
+        f"CONFOUNDER ANALYSIS - are these dependencies really about {driver}?",
+        f"Candidates: {', '.join(genes)}",
+        f"Run at {datetime.now(tz=_UTC).strftime('%Y-%m-%d %H:%M UTC')}",
+        "=" * 78,
+        "",
+    ]
+
+    if driver not in effect_columns:
+        return "\n".join(log + [f"FAILURE: {driver} is not in the CRISPR library, so co-dependency cannot be tested."])
+
+    driver_effect = gene_effect[effect_columns[driver]]
+
+    # Reference scale: how strongly do known members of the driver's own pathway co-vary with it?
+    reference = {}
+    for pathway_gene in ("RAF1", "SHOC2", "MAPK1", "BRAF", "PTPN11", "SOS1"):
+        if pathway_gene in effect_columns and pathway_gene != driver:
+            y = gene_effect[effect_columns[pathway_gene]]
+            mask = driver_effect.notna() & y.notna()
+            if mask.sum() > 30:
+                reference[pathway_gene] = stats.pearsonr(driver_effect[mask], y[mask])[0]
+    if reference:
+        best_reference = max(reference.values())
+        log.append("REFERENCE SCALE | co-dependency of known MAPK-pathway genes with " + driver)
+        log.append("  " + ", ".join(f"{g} r={r:+.3f}" for g, r in sorted(reference.items(), key=lambda x: -x[1])))
+        log.append(f"  Strongest reference r = {best_reference:+.3f}; candidates are judged against this scale.")
+    else:
+        best_reference = 0.3
+        log.append(f"REFERENCE SCALE | unavailable; falling back to r = {best_reference:.2f} as the bar.")
+
+    # Lineage context for the concentration check.
+    cohort, _ = _select_cancer_models(bundle["model"], cancer_type)
+    cohort_ids = set(cohort["ModelID"]) & set(gene_effect.index)
+    lineage_by_model = bundle["model"].set_index("ModelID")["OncotreeLineage"]
+
+    shared_models = gene_effect.index.intersection(expression.index)
+    expression_matrix = expression.loc[shared_models]
+    expression_values = expression_matrix.to_numpy(dtype=float)
+    expression_valid = ~np.isnan(expression_values)
+
+    verdicts = {}
+    for gene in genes:
+        log.append("")
+        log.append(f"### {gene}")
+        if gene not in effect_columns:
+            log.append("  Not present in the CRISPR library; skipped.")
+            continue
+
+        candidate_effect = gene_effect[effect_columns[gene]]
+
+        # --- check 1: co-dependency with the driver ---
+        mask = driver_effect.notna() & candidate_effect.notna()
+        codependency, codependency_p = stats.pearsonr(driver_effect[mask], candidate_effect[mask])
+        log.append(
+            f"  1) Co-dependency with {driver}: r={codependency:+.3f} (p={codependency_p:.1e}, n={int(mask.sum())}) "
+            f"vs strongest pathway reference r={best_reference:+.3f}"
+        )
+
+        # --- check 2: expression biomarkers of the dependency ---
+        y = candidate_effect.loc[shared_models].to_numpy(dtype=float)
+        y_valid = ~np.isnan(y)
+        # Pearson correlation of the dependency against every expressed gene, computed from raw
+        # sums so that each column uses only the cell lines where both values are present.
+        usable = expression_valid & y_valid[:, None]
+        counts = usable.sum(axis=0).astype(float)
+        x = np.where(usable, expression_values, 0.0)
+        y_masked = np.where(usable, y[:, None], 0.0)
+        sum_x = x.sum(axis=0)
+        sum_y = y_masked.sum(axis=0)
+        sum_xy = (x * y_masked).sum(axis=0)
+        sum_xx = (x * x).sum(axis=0)
+        sum_yy = (y_masked * y_masked).sum(axis=0)
+        numerator = counts * sum_xy - sum_x * sum_y
+        denominator = np.sqrt(
+            np.clip(counts * sum_xx - sum_x**2, 0, None) * np.clip(counts * sum_yy - sum_y**2, 0, None)
+        )
+        with np.errstate(divide="ignore", invalid="ignore"):
+            correlations = np.where(denominator > 0, numerator / denominator, np.nan)
+        correlations = np.where(counts >= 100, correlations, np.nan)
+
+        biomarker_series = pd.Series(correlations, index=[c.split(" (")[0] for c in expression_matrix.columns])
+        strongest = biomarker_series.reindex(biomarker_series.abs().sort_values(ascending=False).index)
+        strongest = strongest[strongest.index != gene].head(top_biomarkers)
+        log.append(
+            f"  2) Strongest expression biomarkers of {gene} dependency (positive r = high expression -> less depleted):"
+        )
+        for biomarker, value in strongest.items():
+            log.append(f"       {biomarker:<12} r={value:+.3f}")
+
+        driver_expression_r = biomarker_series.get(driver, float("nan"))
+        driver_rank = (
+            int((biomarker_series.abs() > abs(driver_expression_r)).sum()) + 1
+            if pd.notna(driver_expression_r)
+            else None
+        )
+        if driver_rank:
+            log.append(
+                f"       {driver} expression itself: r={driver_expression_r:+.3f} (rank {driver_rank} of "
+                f"{int(biomarker_series.notna().sum())} genes)"
+            )
+
+        # Paralog check: scan the whole gene family explicitly, since a paralog that ranks just
+        # outside the top biomarkers (VPS4B for VPS4A) still explains the dependency away.
+        family_prefixes = {re.sub(r"(?<=\d)[A-Z]$", "", gene), re.sub(r"\d+$", "", gene)}
+        family_prefixes = {p for p in family_prefixes if len(p) >= 3 and p != gene}
+        family = [
+            symbol
+            for symbol in biomarker_series.index
+            if symbol != gene and any(symbol.startswith(prefix) for prefix in family_prefixes)
+        ]
+        paralog_hit = None
+        if family:
+            family_series = biomarker_series.reindex(sorted(set(family))).dropna()
+            family_series = family_series.reindex(family_series.abs().sort_values(ascending=False).index)
+            shown = ", ".join(f"{symbol} r={value:+.3f}" for symbol, value in family_series.head(4).items())
+            log.append(f"       Paralog family ({'/'.join(sorted(family_prefixes))}*): {shown}")
+            if len(family_series) and abs(family_series.iloc[0]) >= 0.25:
+                paralog_hit = (family_series.index[0], family_series.iloc[0])
+        if paralog_hit:
+            paralog_rank = int((biomarker_series.abs() > abs(paralog_hit[1])).sum()) + 1
+            log.append(
+                f"       PARALOG ALERT: {paralog_hit[0]} expression (r={paralog_hit[1]:+.3f}, rank {paralog_rank} of "
+                f"{int(biomarker_series.notna().sum())}) predicts this dependency far better than {driver} "
+                f"(rank {driver_rank}) - this looks like a paralog-loss dependency, independent of {driver} status."
+            )
+
+        # --- check 3: lineage concentration ---
+        depleted = candidate_effect[candidate_effect < DEPLETION_THRESHOLD]
+        lineage_counts = lineage_by_model.reindex(depleted.index).value_counts()
+        total_depleted = int(lineage_counts.sum())
+        if total_depleted:
+            top_lineage = lineage_counts.index[0]
+            top_share = lineage_counts.iloc[0] / total_depleted * 100
+            log.append(
+                f"  3) Lineage concentration: {total_depleted} dependent lines overall, "
+                f"top lineage {top_lineage} holds {top_share:.0f}%"
+            )
+        else:
+            top_share = 0.0
+            log.append("  3) Lineage concentration: no line passes the depletion threshold.")
+
+        in_cohort = [m for m in depleted.index if m in cohort_ids]
+        log.append(f"     Within '{cancer_type}': {len(in_cohort)} dependent lines")
+
+        # --- verdict ---
+        if paralog_hit:
+            verdict = (
+                f"CONFOUNDED - the dependency tracks {paralog_hit[0]} expression, not {driver} status. "
+                "Stratify by that biomarker before any experiment; as it stands this is not a "
+                f"{driver} synthetic lethality."
+            )
+        elif abs(codependency) >= best_reference * 0.5 and codependency > 0:
+            verdict = f"DRIVER-CONSISTENT - co-dependency with {driver} is on the scale of its known pathway members."
+        elif pd.notna(driver_expression_r) and driver_rank and driver_rank <= 100:
+            verdict = f"DRIVER-PLAUSIBLE - {driver} expression is among the strongest predictors of this dependency."
+        elif top_share >= 50:
+            verdict = (
+                f"CONFOUNDED - {top_share:.0f}% of dependent lines come from one lineage; the mutant/wild-type "
+                "contrast may just be lineage composition."
+            )
+        else:
+            verdict = (
+                f"UNEXPLAINED - no co-dependency with {driver}, no {driver}-related biomarker and no single "
+                "lineage explains it. Could still be a genuine parallel-pathway SL, but the mechanism is open."
+            )
+        verdicts[gene] = verdict
+        log.append(f"  VERDICT: {verdict}")
+
+    log.append("")
+    log.append("SUMMARY")
+    for gene, verdict in verdicts.items():
+        log.append(f"  {gene:<12}{verdict.split(' - ')[0]}")
+
+    log.append("")
+    log.append("PROVENANCE")
+    for item in bundle["provenance"]:
+        log.append(f"  - {item}")
+    log.append(f"  - {expression_bundle['provenance']}")
+    log.append(
+        "  - Correlations are Pearson across all DepMap lines with both measurements; a confounded verdict is a "
+        "reason to stratify the analysis, not proof that the interaction is absent."
+    )
+    return "\n".join(log)
+
+
+# ---------------------------------------------------------------------------
+# Tool 5: integrated evidence dossier
 # ---------------------------------------------------------------------------
 def _parse_candidate_line(discovery_report: str) -> list[str]:
     for line in discovery_report.splitlines():

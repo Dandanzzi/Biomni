@@ -201,6 +201,57 @@ description = [
         ],
     },
     {
+        "description": "Test whether a candidate synthetic-lethal dependency is really driven by the driver "
+        "mutation or by a confounder. Runs three falsification checks across the whole DepMap panel: "
+        "co-dependency with the driver's gene-effect profile (calibrated against known pathway members), the "
+        "expression biomarkers that best predict the dependency including an explicit paralog-family scan "
+        "(catching paralog-loss effects such as VPS4A/VPS4B), and lineage concentration. Returns a verdict of "
+        "DRIVER-CONSISTENT / DRIVER-PLAUSIBLE / CONFOUNDED / UNEXPLAINED per candidate. Requires the DepMap "
+        "expression matrix in the data lake.",
+        "name": "check_dependency_confounders",
+        "optional_parameters": [
+            {
+                "default": "pan-cancer",
+                "description": "Cancer context used for the lineage summary; correlations always use all "
+                "lineages so that the sample size is adequate",
+                "name": "cancer_type",
+                "type": "str",
+            },
+            {
+                "default": None,
+                "description": "Directory holding the DepMap files (default: ./data/biomni_data/data_lake)",
+                "name": "data_lake_path",
+                "type": "str",
+            },
+            {
+                "default": None,
+                "description": "Optional mutation table overriding the default mutation source",
+                "name": "mutation_csv_path",
+                "type": "str",
+            },
+            {
+                "default": 5,
+                "description": "Number of top expression biomarkers to report per candidate",
+                "name": "top_biomarkers",
+                "type": "int",
+            },
+        ],
+        "required_parameters": [
+            {
+                "default": None,
+                "description": "The driver gene whose mutation defined the candidates, e.g. 'KRAS'",
+                "name": "target_mutation",
+                "type": "str",
+            },
+            {
+                "default": None,
+                "description": "Candidate genes to scrutinise; a list of HUGO symbols or a comma-separated string",
+                "name": "candidate_genes",
+                "type": "list[str] | str",
+            },
+        ],
+    },
+    {
         "description": "Run the complete synthetic lethality pipeline end to end (DepMap statistical discovery -> "
         "PubMed literature validation -> STRING PPI analysis) and integrate the three evidence streams into an "
         "evidence dossier: per candidate a confidence grade, supporting and contradicting evidence, remaining "
