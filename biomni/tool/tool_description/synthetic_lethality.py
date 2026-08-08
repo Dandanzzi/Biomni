@@ -253,9 +253,12 @@ description = [
     },
     {
         "description": "Run the complete synthetic lethality pipeline end to end (DepMap statistical discovery -> "
-        "PubMed literature validation -> STRING PPI analysis) and integrate the three evidence streams into an "
-        "evidence dossier: per candidate a confidence grade, supporting and contradicting evidence, remaining "
-        "uncertainties, a minimal validation experiment and a Go / Hold / No-go recommendation.",
+        "PubMed literature validation -> STRING PPI analysis -> confounder falsification) and integrate the "
+        "evidence streams into an evidence dossier: per candidate a confidence grade, supporting and "
+        "contradicting evidence, remaining uncertainties, a minimal validation experiment and a Go / Hold / "
+        "No-go recommendation. A candidate whose dependency is explained by a confounder is forced to No-go. "
+        "The dossier is returned first and fits within a typical 10,000-character observation window; this is "
+        "the preferred single call for answering a synthetic lethality question.",
         "name": "generate_sl_evidence_dossier",
         "optional_parameters": [
             {
@@ -299,6 +302,20 @@ description = [
                 "description": "NCBI API key for a higher Entrez rate limit",
                 "name": "api_key",
                 "type": "str",
+            },
+            {
+                "default": True,
+                "description": "Run the confounder/falsification analysis and let a CONFOUNDED verdict force a "
+                "No-go recommendation",
+                "name": "check_confounders",
+                "type": "bool",
+            },
+            {
+                "default": False,
+                "description": "Append the full per-stage research logs after the dossier. Leave False when "
+                "calling from an agent, or the output will be cropped and the recommendation lost",
+                "name": "include_stage_logs",
+                "type": "bool",
             },
         ],
         "required_parameters": [

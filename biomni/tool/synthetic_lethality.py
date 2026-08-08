@@ -1610,14 +1610,21 @@ def generate_sl_evidence_dossier(
     required_score: int = 400,
     email: str | None = None,
     api_key: str | None = None,
+    check_confounders: bool = True,
+    include_stage_logs: bool = False,
 ) -> str:
     """Run the full synthetic lethality pipeline and produce an integrated evidence dossier.
 
     Chains ``discover_synthetic_lethal_candidates`` (statistical evidence),
-    ``validate_sl_candidates_with_pubmed`` (literature evidence) and ``analyze_ppi_network_for_sl``
-    (protein-network evidence), then integrates the three evidence streams into a per-candidate
-    dossier with a confidence grade, supporting and contradicting evidence, remaining uncertainties,
-    a minimal validation experiment and a Go / Hold / No-go recommendation.
+    ``validate_sl_candidates_with_pubmed`` (literature evidence), ``analyze_ppi_network_for_sl``
+    (protein-network evidence) and ``check_dependency_confounders`` (falsification), then integrates
+    the streams into a per-candidate dossier with a confidence grade, supporting and contradicting
+    evidence, remaining uncertainties, a minimal validation experiment and a Go / Hold / No-go
+    recommendation.
+
+    The integrated dossier is returned FIRST and the verbose per-stage logs last, because agent
+    frameworks (Biomni included) crop tool output to the first ~10,000 characters; putting the
+    recommendation at the end would hide exactly the part that must not be missed.
 
     Because the three streams are not independent (all three ultimately derive from partially
     overlapping cell-line and literature resources), evidence is weighted by directness rather than
@@ -1644,13 +1651,19 @@ def generate_sl_evidence_dossier(
         Contact e-mail for the NCBI Entrez API.
     api_key : str, optional
         NCBI API key for a higher Entrez rate limit.
+    check_confounders : bool, optional
+        Run the confounder/falsification analysis and let a CONFOUNDED verdict force a No-go
+        (default: True). Requires the DepMap expression matrix.
+    include_stage_logs : bool, optional
+        Append the full per-stage research logs after the dossier (default: False). Leave this off
+        when calling from an agent, or the output will be cropped.
 
     Returns
     -------
     str
-        The full research log of all three stages followed by an integrated evidence dossier
-        (confidence grade, supporting/contradicting evidence, proposed validation experiment and
-        Go/Hold/No-go recommendation per candidate).
+        The integrated evidence dossier first (confidence grade, supporting/contradicting evidence,
+        proposed validation experiment and Go/Hold/No-go recommendation per candidate), optionally
+        followed by the per-stage research logs.
 
     """
     sections = []
@@ -1664,7 +1677,7 @@ def generate_sl_evidence_dossier(
     )
     sections.append(discovery)
     if discovery.startswith("FAILURE") or "CANDIDATE_GENES:" not in discovery:
-        return "\n\n".join(sections + ["Pipeline stopped: candidate discovery produced no usable candidates."])
+        return "\n\n".join(["Pipeline stopped: candidate discovery produced no usable candidates.", discovery])
 
     candidates = _parse_candidate_line(discovery)[:top_n]
     discovery_stats = _parse_discovery_table(discovery)
@@ -1687,6 +1700,27 @@ def generate_sl_evidence_dossier(
     )
     sections.append(ppi)
     ppi_verdicts = _parse_ppi_classification(ppi)
+
+    # Falsification stage: run it here rather than trusting the caller to remember, so a confounded
+    # candidate can never reach a Go recommendation.
+    confounder_verdicts = {}
+    if check_confounders:
+        confounders = check_dependency_confounders(
+            target_mutation=target_mutation,
+            candidate_genes=candidates,
+            cancer_type=cancer_type,
+            data_lake_path=data_lake_path,
+            mutation_csv_path=mutation_csv_path,
+        )
+        sections.append(confounders)
+        if not confounders.startswith("FAILURE"):
+            current = None
+            for line in confounders.splitlines():
+                if line.startswith("### "):
+                    current = line[4:].strip()
+                elif current and line.strip().startswith("VERDICT:"):
+                    confounder_verdicts[current] = line.split("VERDICT:", 1)[1].strip()
+                    current = None
 
     # --- integration ---------------------------------------------------------------------------
     dossier = [
@@ -1745,9 +1779,19 @@ def generate_sl_evidence_dossier(
         if ppi_verdict == "DISTANT":
             contradictions.append("no protein-network proximity to the driver; mechanism unexplained")
 
+        confounder_verdict = confounder_verdicts.get(gene, "")
+        confounded = confounder_verdict.startswith("CONFOUNDED")
+        if confounded:
+            penalty += 30
+            contradictions.append(f"confounder analysis: {confounder_verdict}")
+
         total = max(0, statistical_component + selectivity_component + literature_component + ppi_component - penalty)
 
-        if total >= 70 and not literature_row.get("refuted"):
+        # A confounded dependency is not about the driver at all, so it cannot earn a Go regardless
+        # of how strong the statistics look.
+        if confounded:
+            grade, recommendation = "D", "NO-GO (confounded - the dependency is explained by something else)"
+        elif total >= 70 and not literature_row.get("refuted"):
             grade, recommendation = "A", "GO"
         elif total >= 50:
             grade, recommendation = "B", "GO (with the confirmatory experiment below)"
@@ -1765,6 +1809,7 @@ def generate_sl_evidence_dossier(
                 "stats": stats_row,
                 "literature": literature_row,
                 "ppi": ppi_verdict,
+                "confounder": confounder_verdict,
                 "contradictions": contradictions,
                 "components": {
                     "statistical": round(statistical_component, 1),
@@ -1810,6 +1855,8 @@ def generate_sl_evidence_dossier(
             f"    [PubMed] support score {item['literature']['score']}/100 - {item['literature']['interpretation']}"
         )
         dossier.append(f"    [STRING PPI] {item['ppi']}")
+        if item["confounder"]:
+            dossier.append(f"    [Confounder check] {item['confounder']}")
         dossier.append("")
         dossier.append("  CONTRADICTING EVIDENCE / FAILURE MODES")
         if item["contradictions"]:
@@ -1855,5 +1902,16 @@ def generate_sl_evidence_dossier(
         "  - Cell-line dependency does not establish a therapeutic window in patients; normal-tissue toxicity is untested."
     )
 
-    sections.append("\n".join(dossier))
-    return "\n\n".join(sections)
+    # The dossier goes first: agent frameworks crop tool output to the first ~10,000 characters,
+    # and the Go/Hold/No-go recommendation is precisely the part that must survive that crop.
+    output = ["\n".join(dossier)]
+    if include_stage_logs:
+        output.append("\n\n".join(["=" * 78, "PER-STAGE RESEARCH LOGS (raw tool output)", *sections]))
+    else:
+        output.append(
+            "Per-stage research logs were omitted to keep this output readable. Re-run with "
+            "include_stage_logs=True, or call discover_synthetic_lethal_candidates / "
+            "validate_sl_candidates_with_pubmed / analyze_ppi_network_for_sl / "
+            "check_dependency_confounders individually, to see the raw evidence."
+        )
+    return "\n\n".join(output)

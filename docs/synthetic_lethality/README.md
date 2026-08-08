@@ -71,12 +71,19 @@ data/biomni_data/data_lake/                     # DepMap 스냅샷 (아래 "데�
 
 ### 설계 원칙
 
+0. **결론을 먼저, 10,000자 안에** — Biomni는 도구 출력을 첫 10,000자에서 자릅니다
+   (`biomni/agent/a1.py`). 초기 버전은 22,357자를 반환하고 Go/Hold/No-go를 맨 끝에 두어
+   **에이전트가 판정을 아예 보지 못했고**, 그 결과 pan-essential 유전자를 "최우선 타겟"으로 서술했습니다.
+   현재 `generate_sl_evidence_dossier`는 순위표와 권고를 맨 앞에 두고 9,700자 이내로 반환하며,
+   원시 단계 로그는 `include_stage_logs=True`일 때만 덧붙입니다.
 1. **수치 판단은 코드가, 서술은 LLM이** — 통계·임계값·QC는 모두 명시적 규칙으로 계산하며 LLM은 계획과 설명만 담당합니다.
 2. **모든 실행에 provenance 기록** — 데이터 파일·스냅샷 날짜·행/열 수·표본 수·API 엔드포인트·통계 가정을 함께 반환합니다.
 3. **신규성과 반증을 구분** — 문헌이 없는 후보는 중립 기준점에서 시작하고, **명시적 반증 문헌만** 감점합니다.
    ("문헌 없음"은 "반증됨"이 아닙니다.)
 4. **능동적 반증 탐색** — PubMed 질의를 3계층(질환 특이 / SL 특이 / **반증 특이**)으로 나눠, 지지 근거뿐 아니라
    비재현·비필수성 보고를 일부러 찾아냅니다.
+5. **반증을 LLM의 재량에 맡기지 않음** — 교란요인 검사는 `generate_sl_evidence_dossier` 안에서 자동 실행되며,
+   CONFOUNDED 판정은 통계가 아무리 강해도 **강제로 No-go**가 됩니다. 에이전트가 이 단계를 "건너뛰기로 결정"할 수 없습니다.
 
 ---
 
@@ -91,6 +98,10 @@ pip install -e .
 ```
 
 추가 의존성은 없습니다 — `pandas`, `numpy`, `scipy`, `requests`는 Biomni 기본 의존성에 포함되어 있습니다.
+
+> **`-e` 플래그가 중요합니다.** 비-editable로 설치된 `biomni` 패키지가 site-packages에 있으면,
+> 저장소 루트 밖에서 스크립트를 실행할 때 그쪽이 먼저 로드되어 이 툴킷 모듈을 찾지 못합니다.
+> `python -c "import biomni; print(biomni.__file__)"`가 저장소 경로를 가리키는지 확인하세요.
 
 > Biomni 본체는 Python 3.11 이상을 요구하지만, 이 툴킷 모듈 자체는 3.10에서도 동작하도록 작성되어 있습니다.
 
@@ -131,9 +142,22 @@ python run_agent.py --csv my_candidates.csv                # 후보 표 저장 �
 **단계별 실행 / 에이전트 실행**
 
 ```bash
-python run_sl_agent.py --mode direct    # 각 도구의 원시 출력을 단계별로 확인
-python run_sl_agent.py --mode agent     # A1 에이전트가 자연어 질문에서 직접 도구 체인을 계획 (LLM API 키 필요)
+# 각 도구의 원시 출력을 단계별로 확인 (LLM 불필요)
+python run_sl_agent.py --mode direct
+
+# 자연어 질문을 A1 에이전트에 그대로 전달 — 도구 선택과 실행 순서는 에이전트가 스스로 계획
+python run_sl_agent.py --mode agent --query "췌장암과 합성치사 관계에 있는 것을 알려줘."
+
+# 질문을 생략하면 대화형으로 입력받는다 (빈 줄 입력 시 종료)
+python run_sl_agent.py --mode agent
 ```
+
+에이전트 모드는 워크플로를 지정하지 않습니다. Biomni의 tool retriever가 질문에 맞는 도구를 선택하고,
+에이전트가 `<execute>` 파이썬 블록 안에서 도구를 직접 호출합니다.
+등록된 도구 목록을 힌트로 덧붙이고 싶으면 `--guided`를 사용하세요.
+
+> **모델 지정**: `--llm` 기본값은 `claude-sonnet-4-5-20250929`입니다.
+> Biomni는 LLM 호출 시 `temperature`를 전달하므로, 이 파라미터를 받지 않는 최신 모델에서는 400 오류가 납니다.
 
 **파이썬에서 직접 호출**
 

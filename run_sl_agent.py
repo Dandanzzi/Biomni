@@ -25,21 +25,13 @@ USER_QUESTION = (
     "통계적 근거 / 논문 근거 / 네트워크 근거를 통합한 종합 리포트를 만들어 줘."
 )
 
-AGENT_PROMPT = (
-    "Find synthetic lethality candidates for KRAS-mutant pancreatic cancer and validate them.\n"
-    "Follow this workflow:\n"
-    "1. discover_synthetic_lethal_candidates(cancer_type='Pancreatic Cancer', target_mutation='KRAS') "
-    "to obtain genotype-selective dependencies from DepMap CRISPR data.\n"
-    "2. Take the genes on the CANDIDATE_GENES line (top 5) and run "
-    "validate_sl_candidates_with_pubmed(disease='Pancreatic cancer', mutated_gene='KRAS', "
-    "candidate_genes=<those genes>) for literature evidence.\n"
-    "3. Run analyze_ppi_network_for_sl(target_gene='KRAS', candidate_genes=<those genes>) for "
-    "protein-network evidence.\n"
-    "4. Summarise as: discovered target -> statistical evidence -> literature evidence -> PPI evidence, "
-    "and give a Go/Hold/No-go recommendation per candidate. State the contradicting evidence and the "
-    "QC warnings explicitly - do not present weakly supported candidates as established.\n"
-    "Alternatively, generate_sl_evidence_dossier(cancer_type='Pancreatic Cancer', target_mutation='KRAS') "
-    "runs all three stages and integrates them in one call."
+# 에이전트 모드에서는 사용자의 자연어 질문을 그대로 A1에 넘긴다. 어떤 도구를 어떤 순서로 쓸지는
+# 에이전트가 스스로 계획해야 하며(= Biomni의 핵심 동작), 아래 힌트는 --guided 플래그로만 덧붙는다.
+WORKFLOW_HINT = (
+    "\n\n[참고] 합성치사 전용 도구가 등록되어 있습니다: discover_synthetic_lethal_candidates, "
+    "validate_sl_candidates_with_pubmed, analyze_ppi_network_for_sl, check_dependency_confounders, "
+    "generate_sl_evidence_dossier. 근거가 약한 후보를 확정된 것처럼 제시하지 말고, 반대 근거와 QC 경고를 "
+    "명시적으로 함께 보고하세요."
 )
 
 
@@ -91,26 +83,44 @@ def run_direct(cancer_type: str, mutation: str, top_n: int, output_path: str | N
         print(f"\nFull dossier written to {output_path}")
 
 
-def run_agent(llm: str, data_path: str) -> None:
-    """Let the Biomni A1 agent plan and execute the tool chain from the natural-language question."""
+def run_agent(llm: str, data_path: str, query: str | None, guided: bool) -> None:
+    """자연어 질문을 그대로 A1에게 넘긴다. 도구 선택과 실행 순서는 에이전트가 스스로 계획한다.
+
+    query가 없으면 대화형으로 질문을 입력받는다 (빈 줄 입력 시 종료).
+    """
+    from dotenv import load_dotenv
+
+    load_dotenv(".env")
     from biomni.agent import A1
 
     if not any(os.getenv(key) for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "AZURE_OPENAI_API_KEY")):
-        raise SystemExit("No LLM API key found. Set ANTHROPIC_API_KEY (or another provider key) first.")
+        raise SystemExit("LLM API 키가 없습니다. ANTHROPIC_API_KEY 등을 먼저 설정하세요.")
 
     agent = A1(path=data_path, llm=llm)
     registered = [tool["name"] for tool in agent.module2api.get("biomni.tool.synthetic_lethality", [])]
-    print(f"Synthetic lethality tools available to the agent: {registered}\n")
+    print(f"에이전트에 등록된 합성치사 도구: {registered}")
+    print("Biomni의 tool retriever가 질문에 맞는 도구를 스스로 선택합니다.\n")
 
-    # go_stream already pretty-prints every step, so only the final answer is echoed here.
-    final_output = None
-    for step in agent.go_stream(AGENT_PROMPT):
-        final_output = step.get("output")
+    interactive = query is None
+    while True:
+        if interactive:
+            try:
+                question = input("질문> ").strip()
+            except EOFError:
+                break
+            if not question:
+                break
+        else:
+            question = query
 
-    print("\n" + "=" * 78)
-    print("FINAL AGENT ANSWER")
-    print("=" * 78)
-    print(final_output)
+        _, answer = agent.go(question + (WORKFLOW_HINT if guided else ""))
+        print("\n" + "=" * 78)
+        print("최종 답변")
+        print("=" * 78)
+        print(answer)
+
+        if not interactive:
+            break
 
 
 def main() -> None:
@@ -120,14 +130,24 @@ def main() -> None:
     parser.add_argument("--mutation", default="KRAS")
     parser.add_argument("--top-n", type=int, default=5, help="candidates carried into validation")
     parser.add_argument("--output", default=None, help="write the full dossier to this file")
-    parser.add_argument("--llm", default="claude-sonnet-4-20250514", help="agent mode only")
+    parser.add_argument("--llm", default="claude-sonnet-4-5-20250929", help="agent mode only")
     parser.add_argument("--data-path", default="./data", help="agent mode only")
+    parser.add_argument(
+        "--query",
+        default=None,
+        help="에이전트에게 던질 자연어 질문. 생략하면 대화형으로 입력받는다 (agent 모드 전용)",
+    )
+    parser.add_argument(
+        "--guided",
+        action="store_true",
+        help="등록된 합성치사 도구 목록을 힌트로 덧붙인다 (기본값은 에이전트가 스스로 계획)",
+    )
     args = parser.parse_args()
 
     if args.mode == "direct":
         run_direct(args.cancer_type, args.mutation, args.top_n, args.output)
     else:
-        run_agent(args.llm, args.data_path)
+        run_agent(args.llm, args.data_path, args.query, args.guided)
 
 
 if __name__ == "__main__":
