@@ -1,18 +1,29 @@
-"""췌장암 KRAS 합성치사 후보 발굴 -> 실제 유전자명 확인 -> PubMed 검증 -> 실험 대상 선정.
+"""췌장암 KRAS 합성치사: 세포주 관점과 오가노이드 관점을 나란히 산출한다.
 
-이전 버전은 Gene_A / Gene_B / Gene_C 라는 가상의 이름과 손으로 적은 의존성 점수를 사용했기 때문에
-"Gene_B"에 대응하는 실제 유전자가 존재하지 않았고, 그 결과로는 문헌 검증도 실험도 할 수 없었습니다.
-이 스크립트는 동일한 질문을 실제 DepMap CRISPR 데이터로 다시 풀어서, 실험실에서 바로 주문할 수 있는
-HUGO 유전자 심볼을 출력합니다.
+LLM을 쓰지 않는 결정론적 파이프라인이라 같은 입력이면 항상 같은 결과가 나옵니다.
+(에이전트가 스스로 도구를 계획하는 버전은 run_sl_agent.py --mode agent)
+
+두 관점을 모두 출력합니다.
+
+  [세포주 관점]  DepMap CRISPR 47개 췌장암 세포주에서 통계적으로 발굴한 후보.
+                 근거는 가장 강하지만, 2D 배양·아형 평균화·정상 대조군 부재라는 한계를 안습니다.
+  [오가노이드 관점] 세포주 패널이 원리적으로 답할 수 없는 후보 — 아형 평균화로 상쇄된 것들 —
+                 그리고 각 후보가 오가노이드 배지에서 가려질지(위음성) 여부.
 
     python run_agent.py                      # 췌장암 / KRAS (기본값)
     python run_agent.py --mutation TP53      # 다른 driver 변이
-    python run_agent.py --skip-pubmed        # 통계 단계만 (오프라인)
+    python run_agent.py --skip-pubmed        # 문헌 검증 생략
+    python run_agent.py --skip-organoid      # 세포주 관점만
 """
 
 import argparse
 import os
 
+from biomni.tool.organoid_sl import (
+    assess_organoid_transferability,
+    design_organoid_sl_experiment,
+    discover_subtype_masked_sl_candidates,
+)
 from biomni.tool.synthetic_lethality import (
     check_dependency_confounders,
     discover_synthetic_lethal_candidates,
@@ -25,7 +36,43 @@ MAX_Q_VALUE = 0.10  # 다중검정 보정 후에도 살아남아야 한다
 MIN_MUTANT_DEPENDENT_PCT = 30.0  # 변이 세포주 중 실제로 의존하는 비율
 
 
-def select_experiment_targets(table, top_k: int = 3):
+def print_interpretation_guide(table, targets) -> None:
+    """후보표를 어떻게 읽어야 하는지, 왜 이 후보가 선택되었는지를 화면에 설명한다."""
+    print("=" * 78)
+    print("후보표 해석")
+    print("=" * 78)
+    print("  effect_difference  변이군 - 야생형군 gene effect. 음수일수록 합성치사 방향.")
+    print("  q_value            17,787개 유전자 다중검정 보정값. p값이 아니라 이 값을 보세요.")
+    print("  pct_wildtype_dep   야생형 세포주 중 의존 비율. 0%여야 genotype 선택적입니다.")
+    print("  pct_all_dep        전체 1,183개 세포주 중 의존 비율. 높으면 그냥 필수유전자이고")
+    print("                     정상세포도 죽으므로 치료 window가 없습니다.")
+    print("  선택도             변이의존% - 전체의존%. 이 값이 실질적인 우선순위 지표입니다.")
+    print("")
+    print(f"{'유전자':<10}{'diff':>8}{'q':>9}{'%WT의존':>9}{'%전체의존':>10}{'선택도':>9}  판정")
+    print("-" * 78)
+    chosen = set(targets["gene"])
+    for _, row in table.sort_values("effect_difference").iterrows():
+        gap = row["pct_mutant_dependent"] - row["pct_all_lines_dependent"]
+        if row["gene"] in chosen:
+            reason = "선별 통과"
+        elif row["q_value"] >= MAX_Q_VALUE:
+            reason = f"FDR 탈락 (q={row['q_value']:.2f})"
+        elif row["pct_all_lines_dependent"] >= MAX_PAN_ESSENTIAL_PCT:
+            reason = f"전체 {row['pct_all_lines_dependent']:.0f}% 의존 - 치료 window 없음"
+        elif row["pct_mutant_dependent"] < MIN_MUTANT_DEPENDENT_PCT:
+            reason = f"변이주 중 {row['pct_mutant_dependent']:.0f}%만 의존 - 효과 미미"
+        else:
+            reason = "-"
+        if row["pct_wildtype_dependent"] > 0:
+            reason += f" / 야생형도 {row['pct_wildtype_dependent']:.0f}% 의존"
+        print(
+            f"{row['gene']:<10}{row['effect_difference']:>8.3f}{row['q_value']:>9.3f}"
+            f"{row['pct_wildtype_dependent']:>8.0f}%{row['pct_all_lines_dependent']:>9.0f}%{gap:>9.1f}  {reason}"
+        )
+    print("")
+
+
+def select_experiment_targets(table, top_k: int = 5):
     """통계 결과표에서 wet-lab 검증 우선순위를 규칙 기반으로 선별한다."""
     eligible = table[
         (table["pct_all_lines_dependent"] < MAX_PAN_ESSENTIAL_PCT)
@@ -36,6 +83,27 @@ def select_experiment_targets(table, top_k: int = 3):
     eligible["selectivity_gap"] = eligible["pct_mutant_dependent"] - eligible["pct_all_lines_dependent"]
     eligible = eligible.sort_values(["selectivity_gap", "effect_difference"], ascending=[False, True])
     return eligible.head(top_k), len(eligible)
+
+
+def parse_labelled_block(report: str, label: str) -> dict:
+    """'### GENE' 블록에서 'label: ...' 줄을 유전자별로 뽑아낸다."""
+    found = {}
+    current = None
+    for line in report.splitlines():
+        if line.startswith("### "):
+            current = line[4:].strip()
+        elif current and line.strip().startswith(label):
+            found[current] = line.split(label, 1)[1].strip()
+            current = None
+    return found
+
+
+def parse_masked_candidates(report: str) -> list[str]:
+    """아형 마스킹 리포트에서 후보 유전자 목록을 뽑아낸다."""
+    for line in report.splitlines():
+        if line.startswith("SUBTYPE_MASKED_CANDIDATES:"):
+            return [g.strip() for g in line.split(":", 1)[1].split(",") if g.strip()]
+    return []
 
 
 def parse_confounder_verdicts(report: str) -> dict:
@@ -90,7 +158,12 @@ def main() -> None:
     parser.add_argument("--mutation", default="KRAS")
     parser.add_argument("--top-n", type=int, default=15, help="통계 단계에서 보고할 후보 수")
     parser.add_argument("--skip-pubmed", action="store_true", help="문헌 검증 생략 (오프라인 실행)")
-    parser.add_argument("--csv", default="sl_candidates.csv", help="후보 표를 저장할 경로")
+    parser.add_argument("--skip-organoid", action="store_true", help="오가노이드 관점 생략 (세포주 관점만)")
+    parser.add_argument(
+        "--csv",
+        default=None,
+        help="후보 표를 CSV로도 저장할 경로 (기본: 저장하지 않고 화면에만 출력)",
+    )
     args = parser.parse_args()
 
     print("=" * 78)
@@ -99,21 +172,29 @@ def main() -> None:
     print("")
 
     # ---- 1단계: 실제 DepMap 데이터로 후보 발굴 -------------------------------------------
+    # 후보표는 화면에 출력하는 것이 기본이다. --csv를 준 경우에만 파일로 남기고, 그렇지 않으면
+    # 임시 파일에 받아서 읽은 뒤 지운다 (작업 디렉터리에 산출물을 남기지 않기 위해).
+    import tempfile
+
+    import pandas as pd
+
+    table_path = args.csv or os.path.join(tempfile.mkdtemp(prefix="biomni_sl_"), "candidates.csv")
     report = discover_synthetic_lethal_candidates(
         cancer_type=args.cancer_type,
         target_mutation=args.mutation,
         top_n=args.top_n,
-        output_csv_path=args.csv,
+        output_csv_path=table_path,
     )
     print(report)
 
-    if report.startswith("FAILURE") or not os.path.exists(args.csv):
+    if report.startswith("FAILURE") or not os.path.exists(table_path):
         print("\n후보 발굴에 실패했습니다. 위의 실패 사유를 확인하세요.")
         return
 
-    import pandas as pd
-
-    table = pd.read_csv(args.csv)
+    table = pd.read_csv(table_path)
+    if not args.csv:
+        os.remove(table_path)
+        os.rmdir(os.path.dirname(table_path))
     if table.empty:
         print("\n통계 필터를 통과한 후보가 없습니다.")
         return
@@ -132,6 +213,8 @@ def main() -> None:
     if targets.empty:
         print("  기준을 통과한 후보가 없습니다. 통계 근거만으로 실험을 시작하지 마세요.")
         return
+    print("")
+    print_interpretation_guide(table, targets)
 
     print("")
     print(f"{'순위':<6}{'유전자':<12}{'변이군':>9}{'야생형':>9}{'차이':>9}{'q':>9}{'변이의존':>9}{'전체의존':>9}")
@@ -183,18 +266,80 @@ def main() -> None:
         print("=" * 78)
         for gene in dropped:
             print(f"  {gene}: {verdicts[gene]}")
+        print(f"  -> 남은 실험 대상: {', '.join(clean) if clean else '없음'}")
         print("")
 
     if not clean:
         print("모든 후보가 교란요인으로 설명됩니다. 실험을 시작하기 전에 해당 바이오마커로")
         print("층화한 뒤 discover_synthetic_lethal_candidates를 다시 실행하세요.")
-        print(f"\n전체 후보 표: {args.csv}")
         return
 
+    # ---- 5단계: 오가노이드 관점 -------------------------------------------------------------
+    masked_genes: list[str] = []
+    transfer: dict = {}
+    if not args.skip_organoid:
+        print("=" * 78)
+        print("오가노이드 관점 (1) — 세포주 통합 분석이 아형 평균화로 놓친 후보")
+        print("=" * 78)
+        masked_report = discover_subtype_masked_sl_candidates(
+            cancer_type=args.cancer_type,
+            target_mutation=args.mutation,
+            top_n=args.top_n,
+        )
+        print(masked_report)
+        masked_genes = parse_masked_candidates(masked_report)
+
+        print("")
+        print("=" * 78)
+        print("오가노이드 관점 (2) — 각 후보가 오가노이드에서도 검출될 것인가")
+        print("=" * 78)
+        assessed = list(dict.fromkeys(clean + masked_genes))
+        transfer_report = assess_organoid_transferability(
+            candidate_genes=assessed,
+            target_mutation=args.mutation,
+            cancer_type=args.cancer_type,
+        )
+        print(transfer_report)
+        transfer = parse_labelled_block(transfer_report, "VERDICT:")
+
+        # ---- 통합 요약 ---------------------------------------------------------------------
+        print("")
+        print("=" * 78)
+        print("통합 요약 — 세포주 관점 vs 오가노이드 관점")
+        print("=" * 78)
+        print(f"{'유전자':<12}{'발굴 관점':<22}{'교란 판정':<18}오가노이드 전이성")
+        print("-" * 78)
+        for gene in assessed:
+            origin = "세포주 (통합 검정)" if gene in clean else "오가노이드 (아형 마스킹)"
+            confound = verdicts.get(gene, "-").split(" - ")[0]
+            organoid = transfer.get(gene, "-").split(" - ")[0]
+            print(f"{gene:<12}{origin:<22}{confound:<18}{organoid}")
+        print("")
+        print("  · 세포주 관점 후보: 근거는 가장 강하지만 2D 배양·정상 대조군 부재의 한계를 안습니다.")
+        print("  · 오가노이드 관점 후보: 근거는 약하지만, 세포주 패널로는 원리적으로 판정할 수 없어")
+        print("    오가노이드에서만 답이 나옵니다.")
+        print("  · ORGANOID-MASKED 후보는 표준 배지에서 위음성이 납니다. 배지 수정 없이 실험하지 마세요.")
+        print("")
+
+    # ---- 6단계: 최우선 후보의 실험 프로토콜 ------------------------------------------------
     top = targets[targets["gene"] == clean[0]].iloc[0]
     print_experiment_plan(top["gene"], top, args.mutation)
     print(f"교란요인 판정: {verdicts.get(top['gene'], 'N/A')}")
-    print(f"전체 후보 표: {args.csv}")
+
+    if not args.skip_organoid:
+        print("")
+        print(
+            design_organoid_sl_experiment(
+                candidate_gene=top["gene"],
+                target_mutation=args.mutation,
+                cancer_type=args.cancer_type,
+            )
+        )
+        print("")
+        print(f"오가노이드 전이성 판정: {transfer.get(top['gene'], 'N/A')}")
+
+    if args.csv:
+        print(f"\n전체 후보 표를 {args.csv}에 저장했습니다.")
 
 
 if __name__ == "__main__":

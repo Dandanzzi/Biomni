@@ -860,6 +860,7 @@ def read_module2api():
         "pathology",
         "pharmacology",
         "physiology",
+        "organoid_sl",
         "synthetic_biology",
         "synthetic_lethality",
         "systems_biology",
