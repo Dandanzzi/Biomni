@@ -130,7 +130,7 @@ data/biomni_data/data_lake/                     # DepMap 스냅샷 (아래 "데�
 
 ## 핵심 기능
 
-### 8개 도구
+### 11개 도구
 
 **세포주 층** (`biomni/tool/synthetic_lethality.py`)
 
@@ -147,7 +147,10 @@ data/biomni_data/data_lake/                     # DepMap 스냅샷 (아래 "데�
 | 도구 | 역할 | 주요 출력 |
 |---|---|---|
 | `discover_subtype_masked_sl_candidates` | 아형(classical/basal) 별로 나눠 재검정 — 통합 분석이 상쇄시킨 후보 발굴 | 아형 내에서만 유의한 유전자, 아형별 검정력 |
-| `assess_organoid_transferability` | 오가노이드에서도 보일지 예측 (배지 niche 인자, 부착 의존성, 정상조직 window, 직교 유전상호작용) | ORGANOID-ENHANCED / MASKED / WEAKENED / TRANSFERABLE + **배지 수정 권고** |
+| `discover_allele_resolved_sl_candidates` | driver 변이를 allele 단위로 쪼개 재검정 — `KRAS 변이` 라벨이 희석시킨 후보 발굴 | allele별 RAS 경로 의존성, allele 제한적 후보, **검정 불가 allele 목록** |
+| `discover_serum_masked_dependencies` | 무혈청(오가노이드) 배지에서만 드러나는 지질/스테롤 의존성 발굴 | 지질 프로그램 permutation 농축, MISSED-BY-2D 후보 |
+| `assess_organoid_transferability` | 오가노이드에서도 보일지 예측 (배지 niche 인자, 부착 의존성, **무혈청 민감도**, 정상조직 window, 직교 유전상호작용) | ORGANOID-ENHANCED / MASKED / WEAKENED / TRANSFERABLE + **배지 수정 권고** |
+| `rank_organoid_sl_candidates` | 후보들을 **서로 비교**해 오가노이드를 어디에 쓸지 결론까지 냄 (유전형 선택성 게이트 + 오가노이드가 무엇을 더 측정해 주는지) | 순위표, SL-CANDIDATE / CORE-FITNESS-NOT-SL / PARALOG-CONFOUNDED / NO-WINDOW, `ORGANOID_TOP_PICK` |
 | `design_organoid_sl_experiment` | PDO 검증 프로토콜 생성 | 모델 패널·배지·CRISPR 전달·3D 판독·검정력·사전 반증 기준 |
 
 ### 설계 원칙
@@ -297,26 +300,30 @@ agent.go("췌장암에서 KRAS 변이 기반 합성치사 후보를 찾고 논�
 | `q_value` | 17,787개 유전자 다중검정 보정값 | **q<0.1** (p값이 아니라 이 값을 보세요) |
 | `pct_wildtype_dependent` | 야생형 세포주 중 의존 비율 | **0%여야 genotype 선택적** |
 | `pct_all_lines_dependent` | 전체 1,183주 중 의존 비율 | 높으면 그냥 필수유전자 → 치료 window 없음 |
-| **선택도** | 변이의존% − 전체의존% | 실질적인 우선순위 지표 |
+| **선택도** | 변이의존% − 전체의존% | genotype 특이성의 핵심 지표 |
+| **점수** | 선택도 + 효과크기 − window − FDR − 야생형의존 | 세포주 단계의 우선순위 |
 
 핵심은 마지막 두 컬럼입니다. `effect_difference`가 커도 `pct_all_lines_dependent`가 높으면
 정상세포도 함께 죽으므로 치료 표적이 될 수 없습니다.
 
 ### 췌장암 KRAS 실행 결과 (DepMap 로컬 스냅샷, 47종 = 변이 40 / 야생형 4 / 미프로파일 3)
 
-| 유전자 | diff | q | %WT 의존 | %전체 의존 | 선택도 | 판정 |
+| 유전자 | diff | q | %WT 의존 | %전체 의존 | 선택도 | 세포주 단계 판정 |
 |---|---|---|---|---|---|---|
-| **NDE1** | −0.341 | 0.047 | 0% | 30% | **+32.7** | ✅ 최우선 |
-| VPS4A | −0.482 | 0.005 | 0% | 20% | +32.9 | ❌ VPS4B 파라로그 교란 |
-| **SREBF1** | −0.332 | 0.029 | 0% | 21% | **+21.2** | ✅ 2순위 |
-| **TEAD1** | −0.265 | 0.012 | 0% | 17% | **+15.9** | ✅ 오가노이드 최적 |
+| VPS4A | −0.482 | 0.005 | 0% | 20% | +32.9 | ❌ VPS4B 파라로그 교란으로 탈락 |
+| NDE1 | −0.341 | 0.047 | 0% | 30% | +32.7 | ✅ 통과 |
+| SREBF1 | −0.332 | 0.029 | 0% | 21% | +21.2 | ✅ 통과 |
+| TEAD1 | −0.265 | 0.012 | 0% | 17% | +15.9 | ✅ 통과 |
 | DHFR | −0.429 | 0.029 | **50%** | **72%** | +9.3 | ❌ 야생형도 절반 의존 |
 | ADAR | −0.496 | 0.122 | 0% | 51% | +8.6 | ❌ FDR 탈락 |
 | ARF4 | −0.398 | **0.243** | 25% | 63% | +4.6 | ❌ FDR 탈락 |
 | FADD / CHKA | −0.25 / −0.24 | 0.079 / 0.003 | 0% | 12% / 18% | +8.4 / +1.7 | ⚠️ 변이주 20%만 의존 |
 
-**최적 후보군: NDE1, SREBF1, TEAD1.** 특히 TEAD1은 부착 의존성이 압도적(p=9.6e-39)이라
-3D 오가노이드에서 효과가 더 크게 나올 유일한 후보입니다.
+**세포주 단계를 통과한 후보: NDE1, SREBF1, TEAD1.**
+
+이 표는 어느 후보에 실험을 쓸지까지는 답하지 않습니다. 선택도는 genotype 특이성만 보고,
+파라로그 교란도 문헌도 오가노이드 축도 보지 못하기 때문입니다. 그 결론은
+`rank_organoid_sl_candidates`가 별도의 규칙으로 냅니다 — 아래 [후보 간 순위와 결론](#후보-간-순위와-결론).
 
 ## 왜 반증 검사가 필요한가
 
@@ -375,7 +382,64 @@ TEAD1  → ORGANOID-ENHANCED: 부착 배양에서 의존성이 더 강함 (p=9.6
 부착 민감도는 지식이 아니라 **실측**입니다 — DepMap 923개 부착주 vs 162개 부유주 대비로 계산하며,
 PTK2(FAK) p=2e-72, ITGB1, YAP1이 예상대로 최상위에 나와 방법이 검증됩니다.
 
-### 맹점 3: 정상 대조군의 부재
+### 맹점 3: 유전형 라벨이 allele을 뭉뚱그린다
+
+`KRAS 변이`는 유전형이 아니라 라벨입니다. Nature 2026 오가노이드 바이오뱅크 논문은 대장암 오가노이드에서
+KRAS G12 계열이 KRAS·EGFR·PTPN11에 의존하는 반면 **Q61H는 EGFR 억제와 EGF 제거에 모두 무반응**임을 보였습니다.
+한 allele에만 있는 의존성은 다른 allele을 가진 세포주에 의해 희석되므로, 통합 검정은 그 allele이 패널을
+지배할 때만 찾아냅니다.
+
+DepMap 췌장암 47종을 allele로 쪼개면 논문의 분리가 **다른 암종에서 재현됩니다**:
+
+```
+KRAS 자기의존성 (평균 gene effect)
+  G12D(n=19) -2.257   G12V(n=13) -1.794   G12R(n=4) -1.434
+  Q61H(n=2)  -1.044   ← 야생형(n=4) -0.731 에 근접
+```
+
+그리고 검정 불가 allele이 그대로 남습니다 — Q61H n=2, G12C n=1, G12A n=1.
+**이것은 우회할 결측치가 아닙니다.** 세포주 패널은 수십 년 전 플라스틱에서 자란 것들로 모였으므로
+패널의 allele 빈도는 환자의 allele 빈도와 아무 관계가 없습니다. 오가노이드 바이오뱅크는 환자로부터
+모집하므로 희귀 allele을 **의도적으로** 채울 수 있습니다. 여기서 오가노이드가 주는 것은 막연한 "실제성"이
+아니라 구체적으로 그 유전형입니다.
+
+주 대비는 allele-vs-야생형이 아니라 **allele-vs-다른 allele**입니다. 통합 라벨이 가리는 질문에 정확히
+답하면서, 4종뿐인 야생형군에 의존하지 않기 때문입니다. 다만 이 대비는 합성치사를 입증하지 않습니다 —
+야생형에서도 똑같이 필요한 유전자가 allele 간에 다를 수 있습니다.
+
+### 맹점 4: 혈청이 지질을 공급해 생합성 의존성을 가린다
+
+같은 논문이 보고한 **오가노이드 특이적 core fitness 97개**(세포주와 공유하는 654개와 별개)는
+steroid/cholesterol/isoprenoid 생합성에 집중되어 있습니다. 이것은 3차원성의 신비가 아니라 배지 문제입니다:
+오가노이드 배지는 **무혈청**이라 콜레스테롤과 지방산을 스스로 만들어야 하지만, 10% FBS에서 도는 표준
+스크린은 그것을 그냥 공급해 줍니다. 영양분이 있을 때만 없는 의존성은 우연이 아니라 **구조적으로**
+세포주 패널에 보이지 않습니다.
+
+DepMap이 `SerumFreeMedia`를 주석하므로 이 대비는 가정이 아니라 **측정**할 수 있습니다.
+무혈청 6종 각각을 같은 lineage·같은 growth pattern의 혈청 배양주에 대해 z-score 매겨 lineage 교란을 제거하면:
+
+```
+프로그램                                   n   mean z   perm p
+SREBP sensing and processing               7   -0.506   0.0050  ← 농축
+cholesterol synthesis (post-squalene)     12   -0.380   0.0060  ← 농축
+mevalonate and isoprenoid backbone         9   +0.279   0.9545
+de novo lipogenesis                        8   -0.255   0.0715
+lipoprotein uptake (inverse control)       9   +0.079   0.3330
+```
+
+uptake 행은 **반대 방향으로** 검정하는 내부 대조군입니다 — 배지에 지단백이 없으면 수입할 것이 없으므로
+그 유전자들은 덜 중요해져야 합니다(LDLR z=+1.15). 생합성 프로그램과 uptake 프로그램이 같은 방향으로
+움직였다면 스테롤 결핍이 아니라 배양 아티팩트였을 것입니다.
+
+개별 유전자에서는 ERAD 복합체(SYVN1, DERL2 — HMGCR 분해)와 SCAP-SREBP 수송(RAB1A, TMED10, TMEM167A),
+그리고 SREBP 경로 자체(SCAP, MBTPS2)가 상위에 올라옵니다.
+
+**이 축의 반증은 오가노이드 없이도 됩니다**: 같은 세포주를 지질 제거 혈청에서 다시 돌리면 의존성이 나타나야
+합니다. 오가노이드 스크린을 쓰기 전에 그것부터 하세요. 또한 여기서는 therapeutic window 논리가 뒤집힙니다 —
+환자의 정상 조직은 지질 결핍 상태가 아니므로, 지단백이 없을 때만 존재하는 의존성은 약물 표적이 아니라
+배양 아티팩트일 수 있습니다.
+
+### 맹점 5: 정상 대조군의 부재
 
 세포주 패널에는 짝지어진 정상 조직이 없습니다. 오가노이드에는 있습니다(인접 정상 조직 유래).
 GTEx 정상 췌장 발현으로 사전 선별하고(ACLY 25 TPM → WINDOW RISK 플래그),
@@ -384,12 +448,83 @@ GTEx 정상 췌장 발현으로 사전 선별하고(ACLY 25 TPM → WINDOW RISK 
 ```bash
 python -c "
 from biomni.tool.organoid_sl import (
-    discover_subtype_masked_sl_candidates, assess_organoid_transferability, design_organoid_sl_experiment)
+    discover_subtype_masked_sl_candidates, discover_allele_resolved_sl_candidates,
+    discover_serum_masked_dependencies, assess_organoid_transferability, design_organoid_sl_experiment)
 print(discover_subtype_masked_sl_candidates('Pancreatic Cancer', 'KRAS'))
-print(assess_organoid_transferability(['TEAD1','ACLY','SMAD4'], 'KRAS'))
+print(discover_allele_resolved_sl_candidates('Pancreatic Cancer', 'KRAS'))
+print(discover_serum_masked_dependencies('Pancreatic Cancer', 'KRAS'))
+print(assess_organoid_transferability(['TEAD1','SCAP','LDLR'], 'KRAS'))
 print(design_organoid_sl_experiment('TEAD1', 'KRAS'))
 "
 ```
+
+네 축을 한 번에 돌리려면:
+
+```bash
+python run_agent.py --skip-pubmed          # 세포주 + 오가노이드 4축
+python run_agent.py --skip-serum-axis      # 지질 축만 생략 (permutation이 가장 오래 걸림)
+```
+
+## 후보 간 순위와 결론
+
+위의 다섯 맹점 도구는 각각 **유전자별 판정만** 내리고 후보끼리 비교하지 않습니다.
+`assess_organoid_transferability`는 유전자마다 독립적인 verdict를 뱉고, 세 발굴 도구는
+독립적인 후보 목록을 뱉습니다. 그래서 "그래서 어느 후보에 오가노이드를 쓸 것인가"는
+사람이 리포트를 읽고 판단해야 했습니다. `rank_organoid_sl_candidates`가 그 판단을
+명시적 규칙으로 대신합니다.
+
+두 가지 구분이 순위를 결정하며, 둘 다 개별 축 도구는 하지 않습니다.
+
+**1. 유전형 선택적인가, 그냥 core fitness인가.**
+오가노이드가 아무리 극적으로 드러내 주더라도, 야생형 세포에서도 똑같이 필요한 의존성은
+합성치사가 아닙니다. 지질 축이 특히 그렇습니다 — `discover_serum_masked_dependencies`는
+무혈청 z-score **하나로만** 정렬·필터링하고, mutant−wildtype 차이는 컬럼으로 출력만 합니다.
+그래서 Nature 2026 논문이 보고한 오가노이드 특이적 core fitness가 발견처럼 보이는 모습으로
+후보 목록에 올라옵니다. 실측에서 이 유전자들의 MUT−WT는 SYVN1 −0.013, C17ORF75 −0.015,
+RAB1A −0.039로 사실상 0입니다. 게이트를 통과 못 하면 `CORE-FITNESS-NOT-SL`로 강등되고
+상위 랭크가 불가능해집니다. 환자의 정상 조직은 지질이 굶주려 있지 않으므로, 이들은
+matched normal organoid도 함께 죽입니다.
+
+**2. 오가노이드가 왜 도움이 되는가.**
+`ORGANOID-ENHANCED`는 서로 무관한 두 이유로 붙습니다 — 매트릭스 **부착**, 또는 **무혈청**.
+앞의 것만이 "3D 형식이 같은 질문을 더 잘 측정한다"는 뜻입니다. 뒤의 것은 배지가 어느
+대사 유전자를 제한 인자로 만드는지를 바꾼다는 뜻이고, 잘 먹는 환자에게는 표적이 아니라
+window 위험입니다. 그래서 판독을 `ORGANOID-INSTRUMENT` / `ORGANOID-MEDIUM-EFFECT` /
+`ORGANOID-NEUTRAL`로 나눕니다.
+
+여기에 등급형 파라로그 검사(`check_dependency_confounders`의 임계 0.25 아래에도 경고 밴드
+0.15를 둠), 정상조직 window 검사, 축 수렴 보너스, 문헌 modulator가 붙습니다.
+**적용한 임계값을 전부 출력에 찍으므로**, 결론에 이의가 있으면 어느 상수 때문인지 짚어
+그 줄을 고치고 다시 돌릴 수 있습니다.
+
+### 췌장암 KRAS 실측 결과
+
+| 순위 | 유전자 | 점수 | MUT−WT | %전체의존 | 판정 | 오가노이드 판독 |
+|---|---|---|---|---|---|---|
+| 1 | **TEAD1** | 69.0 | −0.265 | 17% | SL-CANDIDATE | **ORGANOID-INSTRUMENT** |
+| 2 | SREBF1 | 57.9 | −0.332 | 21% | SL-CANDIDATE | ORGANOID-NEUTRAL |
+| 3 | NDE1 | 47.3 | −0.341 | 30% | SL-CANDIDATE | ORGANOID-NEUTRAL |
+| — | CFLAR | 33.0 | −0.492 | 51% | NO-WINDOW | — |
+| — | SCAP | 15.4 | −0.519 | 72% | NO-WINDOW | ORGANOID-MEDIUM-EFFECT |
+| — | SYVN1 | 0.0 | **−0.013** | 58% | **CORE-FITNESS-NOT-SL** | ORGANOID-MEDIUM-EFFECT |
+
+```
+ORGANOID_TOP_PICK: TEAD1
+ORGANOID_CORE_FITNESS_DEMOTED: (26개 — 지질 축 전체 포함)
+```
+
+**TEAD1이 결론입니다.** 유전형 선택성(q=0.012, %WT의존 0%, %전체의존 17%로 셋 중 최저)과
+부착 기반 강화(adherent −0.271 vs suspension −0.037, p=9.6e-39)를 동시에 갖는 유일한
+후보이고, 니치 판정도 "downstream of Matrigel/laminin-rich ECM; not rescued by the medium"이라
+배지가 이 의존성을 가려 위음성을 낼 위험도 없습니다.
+
+세포주 선별 1순위와 갈리는 것이 정상입니다. 세포주 단계는 파라로그·문헌·오가노이드 축을
+보지 못하므로, 파이프라인은 상세 실험 계획 대상을 선별 1순위가 아니라 `ORGANOID_TOP_PICK`으로
+잡고 그 사실을 화면에 명시합니다. `--focus-gene`으로 직접 지정하면 그것이 우선합니다.
+
+**주의: ITGB1은 이 게이트에서 걸러집니다.** allele 축에서 G12V 한정 −0.340으로 뜨지만,
+변이 대 야생형 대비는 −0.058입니다. allele 축 리포트가 경고하는 대로("It does NOT establish
+synthetic lethality with the driver") 두 대비는 다른 질문이며, 게이트가 그 혼동을 잡습니다.
 
 ## 알려진 한계
 
@@ -400,6 +535,14 @@ print(design_organoid_sl_experiment('TEAD1', 'KRAS'))
 - 단일 DepMap release에서 파생된 결과는 **독립 증거로 중복 계산하지 않습니다** (Sanger Project Score 등 외부 스크린 교차검증 권장).
 - 문헌 점수는 **문서화 정도이지 진위가 아닙니다.** 키워드 기반 반증 탐지는 무관한 문맥에서 오탐할 수 있으므로 CONTESTED 판정 시 표시된 PMID를 직접 확인하세요.
 - 세포주 의존성은 환자에서의 therapeutic window를 보장하지 않습니다.
+- **지질/혈청 축은 무혈청 세포주 6종에만 기반합니다.** 그중 췌장 lineage는 없고, 오가노이드도 아니며,
+  실험으로 무혈청 배양한 것이 아니라 단지 그렇게 유지되는 주들입니다. lineage 보정으로 가장 뚜렷한
+  교란은 제거했지만 나머지는 제거하지 못합니다. 개별 유전자 z-score는 노이즈로 보고, 프로그램 수준
+  permutation 검정을 더 신뢰하세요.
+- **allele 축의 q값은 대부분 1에 가깝습니다.** allele당 4~19종에서 17,000개 유전자를 검정하므로 다중검정
+  보정 후 살아남는 것이 거의 없습니다. 리포트는 q값을 숨기지 않고 그대로 출력하며, 모든 행은 가설입니다.
+- 오가노이드 층 전체가 **오가노이드를 측정하지 않습니다.** 로컬 DepMap 스냅샷의 오가노이드 모델 24종 중
+  CRISPR·발현 데이터를 가진 것은 0종입니다.
 
 ---
 
@@ -407,5 +550,11 @@ print(design_organoid_sl_experiment('TEAD1', 'KRAS'))
 
 - Huang K, et al. *Biomni: A General-Purpose Biomedical AI Agent.* bioRxiv (2025)
 - DepMap Consortium — [Cancer Dependency Map portal](https://depmap.org/portal/)
+- *A tumour-derived organoid biobank maps cancer gene dependencies.* Nature (2026) — 환자 유래 오가노이드
+  256종(대장·식도·난소·췌장·위), 그중 162종 genome-wide CRISPR. 오가노이드 특이적 core fitness 97개
+  (steroid/cholesterol/isoprenoid 농축), gene–biomarker 연관 1,841개, KRAS allele별 의존성 분화.
+  이 저장소의 allele 축과 지질 축은 이 논문의 두 발견을 로컬 DepMap에서 검증 가능한 형태로 옮긴 것입니다.
+- Boj SF, et al. *Organoid models of human and mouse ductal pancreatic cancer.* Cell (2015) — 배지 조성
+- Moffitt RA, et al. *Virtual microdissection identifies distinct tumor- and stroma-specific subtypes of PDAC.* Nat Genet (2015) — classical/basal 아형
 - Neggers JE, et al. *Synthetic lethal interaction between the ESCRT paralog enzymes VPS4A and VPS4B.* Cell Reports (2020)
 - Scholl C, et al. *Synthetic lethal interaction between oncogenic KRAS dependency and STK33 suppression.* Cell (2009) — 및 Babij C, et al. Cancer Research (2011)의 반증 보고
