@@ -167,6 +167,148 @@ def _load_expression(data_lake_path: str | None = None) -> dict:
     return bundle
 
 
+# SynLethDB 2.0 (synlethdb_human_sl.parquet: gene_a, gene_b, score, source).
+# The `score` column of the local snapshot is constant 1.0 for all 37,943 pairs, so it carries
+# no confidence information; the evidence type in `source` is the only usable ranking signal.
+_SYNLETHDB_EVIDENCE_TIER = {
+    "LOW THROUGHPUT": 3,
+    "CRISPR/CRISPRI": 3,
+    "DRUG SCREEN": 3,
+    "SYNLETHALITY": 3,
+    "HIGH THROUGHPUT": 2,
+    "GENOMERNAI": 2,
+    "RNAI SCREEN": 2,
+    "TEXT MINING": 1,
+    "DECIPHER": 1,
+    "DAISY": 0,
+    "COMPUTATIONAL PREDICTION": 0,
+}
+_SYNLETHDB_TIER_NAME = {
+    3: "experimental (low-throughput / CRISPR / drug screen)",
+    2: "high-throughput or RNAi screen",
+    1: "text mining / curation",
+    0: "computational prediction",
+}
+_SYNLETHDB_CACHE: dict = {}
+
+
+def _load_synlethdb(data_lake_path: str | None = None) -> dict | None:
+    """Load and cache the human SynLethDB SL pair table. Returns None when the file is absent."""
+    import pandas as pd
+
+    try:
+        resolved = _resolve_data_lake(data_lake_path)
+    except FileNotFoundError:
+        resolved = data_lake_path or DEFAULT_DATA_LAKE
+    if resolved in _SYNLETHDB_CACHE:
+        return _SYNLETHDB_CACHE[resolved]
+
+    path = os.path.join(resolved, "synlethdb_human_sl.parquet")
+    if not os.path.exists(path):
+        _SYNLETHDB_CACHE[resolved] = None
+        return None
+
+    table = pd.read_parquet(path)
+    missing = {"gene_a", "gene_b"} - set(table.columns)
+    if missing:
+        raise ValueError(f"{path} is missing required column(s) {sorted(missing)}")
+    table["gene_a"] = table["gene_a"].astype(str).str.upper().str.strip()
+    table["gene_b"] = table["gene_b"].astype(str).str.upper().str.strip()
+    if "source" not in table.columns:
+        table["source"] = ""
+    constant_score = "score" in table.columns and table["score"].nunique(dropna=True) <= 1
+
+    bundle = {
+        "table": table,
+        "constant_score": constant_score,
+        "provenance": (
+            f"SynLethDB human SL pairs: {_file_provenance(path)}; {len(table)} pairs, "
+            f"{len(set(table['gene_a']) | set(table['gene_b']))} genes"
+            + (
+                " (WARNING: the `score` column is constant in this snapshot, so pairs are weighted by "
+                "evidence type instead)"
+                if constant_score
+                else ""
+            )
+        ),
+    }
+    _SYNLETHDB_CACHE[resolved] = bundle
+    return bundle
+
+
+def _synlethdb_partners(gene: str, data_lake_path: str | None = None) -> dict:
+    """Return ``{partner: {"sources": [...], "tier": int}}`` for known SL partners of ``gene``.
+
+    An empty dict means either "no partners recorded" or "SynLethDB not available"; callers should
+    check :func:`_load_synlethdb` separately when they need to tell those apart.
+    """
+    bundle = _load_synlethdb(data_lake_path)
+    if bundle is None:
+        return {}
+
+    gene = str(gene).strip().upper()
+    table = bundle["table"]
+    hits = table[(table["gene_a"] == gene) | (table["gene_b"] == gene)]
+
+    partners: dict[str, dict] = {}
+    for _, row in hits.iterrows():
+        partner = row["gene_b"] if row["gene_a"] == gene else row["gene_a"]
+        if partner == gene or partner in {"", "NAN", "NONE"}:
+            continue
+        # SynLethDB concatenates several evidence types with ';' or '|'.
+        sources = [s.strip() for s in re.split(r"[;|]", str(row["source"])) if s.strip()]
+        tier = max((_SYNLETHDB_EVIDENCE_TIER.get(s.upper(), 0) for s in sources), default=0)
+        record = partners.setdefault(partner, {"sources": set(), "tier": 0})
+        record["sources"].update(sources)
+        record["tier"] = max(record["tier"], tier)
+    for record in partners.values():
+        record["sources"] = sorted(record["sources"])
+    return partners
+
+
+_OVARIAN_HISTOLOGY_ALIASES = {
+    "hgsoc": "High-Grade Serous",
+    "hgsc": "High-Grade Serous",
+    "high grade serous": "High-Grade Serous",
+    "high-grade serous": "High-Grade Serous",
+    "serous": "Serous",
+    "clear cell": "Clear Cell",
+    "ccoc": "Clear Cell",
+    "endometrioid": "Endometrioid",
+    "mucinous": "Mucinous",
+    "germ cell": "Germ Cell",
+}
+
+
+def _select_ovarian_models(model_df, histology: str | None = None):
+    """Subset the DepMap model table to ovarian cancer lines, optionally to one histology.
+
+    Ovarian lines sit under OncotreeLineage "Ovary/Fallopian Tube"; the histology (high-grade
+    serous, clear cell, endometrioid, mucinous) lives in OncotreeSubtype. Non-cancerous and
+    immortalized normal ovarian lines are always dropped - they have no driver genotype to
+    stratify on and would inflate the wild-type group.
+    """
+    mask = model_df["OncotreeLineage"].astype(str).str.contains("ovar", case=False, na=False)
+    for column in ("OncotreePrimaryDisease", "OncotreeSubtype"):
+        if column in model_df.columns:
+            mask = mask | model_df[column].astype(str).str.contains("ovarian", case=False, na=False)
+
+    subset = model_df[mask].copy()
+    non_cancerous = subset["OncotreePrimaryDisease"].astype(str).str.contains(
+        "non-cancerous", case=False, na=False
+    ) | subset["OncotreeSubtype"].astype(str).str.contains("immortalized", case=False, na=False)
+    n_dropped = int(non_cancerous.sum())
+    subset = subset[~non_cancerous]
+    note = f"OncotreeLineage 'Ovary/Fallopian Tube' -> {len(subset)} tumour lines ({n_dropped} non-cancerous dropped)"
+
+    if histology:
+        key = _OVARIAN_HISTOLOGY_ALIASES.get(str(histology).strip().lower(), str(histology).strip())
+        histology_mask = subset["OncotreeSubtype"].astype(str).str.contains(key, case=False, na=False)
+        subset = subset[histology_mask]
+        note += f"; histology filter '{histology}' -> '{key}' -> {len(subset)} lines"
+    return subset, note
+
+
 def _select_cancer_models(model_df, cancer_type: str):
     """Subset the DepMap model table to a cancer context.
 
@@ -307,6 +449,196 @@ def _annotate_mutation_status(models, gene: str, data_lake_path: str, mutation_c
     models["MutationStatus"] = models[key_column].map(classify)
     models["Variant"] = models[key_column].map(lambda k: annotation["mutant_variants"].get(k, ""))
     return models, annotation["source"]
+
+
+# cBioPortal discrete copy-number calls (GISTIC-style): 2 = amplification, -2 = deep deletion.
+CN_AMPLIFICATION = 2
+CN_DEEP_DELETION = -2
+# DepMap OmicsCNGene stores log2(relative copy number + 1), so a neutral diploid gene is 1.0.
+# Amplified = relative CN >= 2 (log2(3) = 1.585); deep deletion = relative CN <= 0.25 (log2(1.25) = 0.322).
+DEPMAP_CN_AMPLIFIED = 1.585
+DEPMAP_CN_DELETED = 0.322
+
+_CN_CACHE: dict = {}
+
+
+def _http_post(url: str, payload: dict, params: dict | None = None, timeout: int = 90, retries: int = 3):
+    """POST with exponential backoff. Returns parsed JSON, or None on failure."""
+    last_error = None
+    for attempt in range(retries):
+        try:
+            response = requests.post(url, json=payload, params=params, timeout=timeout)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:  # network layer: any failure is retried
+            last_error = e
+            time.sleep(1.5 * (attempt + 1))
+    print(f"[synthetic_lethality] POST failed after {retries} attempts ({url}): {last_error}")
+    return None
+
+
+def _copy_number_from_local_file(gene: str, data_lake_path: str, mode: str) -> dict | None:
+    """Read amplification / deep-deletion status from a local DepMap OmicsCNGene.csv if present."""
+    import pandas as pd
+
+    for filename in ("DepMap_OmicsCNGene.csv", "OmicsCNGene.csv"):
+        path = os.path.join(data_lake_path, filename)
+        if not os.path.exists(path):
+            continue
+
+        header = pd.read_csv(path, nrows=0)
+        id_column = header.columns[0]
+        column = {c.split(" (")[0].strip().upper(): c for c in header.columns}.get(gene.upper())
+        if column is None:
+            return None
+        values = pd.read_csv(path, usecols=[id_column, column], index_col=0)[column].dropna()
+
+        # The file is expected in log2(relative CN + 1) space (neutral = 1.0). If the column is not
+        # centred there the thresholds below would be meaningless, so say so instead of guessing.
+        median = float(values.median())
+        scale_note = ""
+        if not 0.5 <= median <= 1.5:
+            scale_note = (
+                f" WARNING: median {gene.upper()} value is {median:.2f}, not ~1.0 - {filename} may not be in "
+                "log2(relative CN + 1) space and the amplification/deletion thresholds may not apply"
+            )
+
+        if mode == "amplification":
+            altered = values[values >= DEPMAP_CN_AMPLIFIED]
+            label = "AMP"
+        else:
+            altered = values[values <= DEPMAP_CN_DELETED]
+            label = "DEL"
+        return {
+            "altered": {model: f"{label} (log2CN={v:.2f})" for model, v in altered.items()},
+            "profiled_models": set(values.index),
+            "key": "ModelID",
+            "source": (
+                f"local {filename} ({_file_provenance(path)}); {len(values)} models, "
+                f"threshold {'>=' if mode == 'amplification' else '<='} "
+                f"{DEPMAP_CN_AMPLIFIED if mode == 'amplification' else DEPMAP_CN_DELETED}{scale_note}"
+            ),
+        }
+    return None
+
+
+def _copy_number_from_cbioportal(gene: str, mode: str) -> dict | None:
+    """Fetch discrete copy-number calls for ``gene`` from the cBioPortal CCLE study.
+
+    Samples returned with alteration 0 are profiled-and-neutral, which is what makes a proper
+    "neutral" control group possible rather than assuming absence of a call means no alteration.
+    """
+    cache_key = (gene.upper(), mode)
+    if cache_key in _CN_CACHE:
+        return _CN_CACHE[cache_key]
+
+    gene_info = _http_get(f"{CBIOPORTAL_API}/genes/{urllib.parse.quote(gene.upper())}")
+    if not gene_info or "entrezGeneId" not in gene_info:
+        return None
+
+    records = _http_post(
+        f"{CBIOPORTAL_API}/molecular-profiles/{CCLE_STUDY_ID}_cna/discrete-copy-number/fetch",
+        payload={"entrezGeneIds": [gene_info["entrezGeneId"]], "sampleListId": f"{CCLE_STUDY_ID}_all"},
+        params={"discreteCopyNumberEventType": "ALL", "projection": "SUMMARY"},
+    )
+    if records is None:
+        return None
+
+    target = CN_AMPLIFICATION if mode == "amplification" else CN_DEEP_DELETION
+    label = "AMP" if mode == "amplification" else "DEL"
+    altered: dict[str, str] = {}
+    profiled: set[str] = set()
+    for record in records:
+        key = _normalize_cell_line_name(str(record.get("sampleId", "")).split("_")[0])
+        profiled.add(key)
+        if record.get("alteration") == target:
+            altered[key] = label
+
+    result = {
+        "altered": altered,
+        "profiled_models": profiled,
+        "key": "normalized_name",
+        "source": (
+            f"cBioPortal {CCLE_STUDY_ID} discrete CNA calls ({len(altered)} {gene.upper()} "
+            f"{'amplifications' if mode == 'amplification' else 'deep deletions'} across {len(profiled)} "
+            "profiled cell lines)"
+        ),
+    }
+    _CN_CACHE[cache_key] = result
+    return result
+
+
+def _annotate_copy_number_status(
+    models, gene: str, data_lake_path: str, mode: str, genotype_csv_path: str | None = None
+):
+    """Attach MUT (= altered) / WT (= neutral) / UNKNOWN copy-number status for ``gene``.
+
+    Group labels reuse the mutation column names so that everything downstream - group selection,
+    testing, reporting - is identical whatever the stratifying event is.
+    Precedence: user-supplied CSV > local DepMap OmicsCNGene file > cBioPortal CCLE API.
+    """
+    import pandas as pd
+
+    models = models.copy()
+    models["_norm_name"] = models["StrippedCellLineName"].map(_normalize_cell_line_name)
+
+    annotation = None
+    if genotype_csv_path:
+        table = pd.read_csv(genotype_csv_path)
+        required = {"ModelID", "HugoSymbol"}
+        if not required.issubset(table.columns):
+            raise ValueError(f"{genotype_csv_path} must contain columns {sorted(required)}")
+        hits = table[table["HugoSymbol"].astype(str).str.upper() == gene.upper()]
+        if "Alteration" in table.columns:
+            keyword = "AMP" if mode == "amplification" else "DEL"
+            hits = hits[hits["Alteration"].astype(str).str.upper().str.contains(keyword, na=False)]
+        annotation = {
+            "altered": {r["ModelID"]: str(r.get("Alteration", mode)) for _, r in hits.iterrows()},
+            "profiled_models": set(table["ModelID"].unique()),
+            "key": "ModelID",
+            "source": f"user-supplied genotype table {genotype_csv_path}",
+        }
+    if annotation is None:
+        annotation = _copy_number_from_local_file(gene, data_lake_path, mode)
+    if annotation is None:
+        annotation = _copy_number_from_cbioportal(gene, mode)
+    if annotation is None:
+        raise RuntimeError(
+            f"Could not determine {gene} copy-number status: no local OmicsCNGene.csv and the cBioPortal "
+            "API is unreachable. Supply `mutation_csv_path` with columns ModelID,HugoSymbol[,Alteration]."
+        )
+
+    key_column = "ModelID" if annotation["key"] == "ModelID" else "_norm_name"
+
+    def classify(key):
+        if key in annotation["altered"]:
+            return "MUT"
+        return "WT" if key in annotation["profiled_models"] else "UNKNOWN"
+
+    models["MutationStatus"] = models[key_column].map(classify)
+    models["Variant"] = models[key_column].map(lambda k: annotation["altered"].get(k, ""))
+    return models, annotation["source"]
+
+
+# stratify_by value -> (altered-group label, control-group label, event name, short labels)
+_STRATIFY_MODES = {
+    "mutation": ("MUTANT", "WILD-TYPE", "mutation", ("MUT", "WT")),
+    "amplification": ("AMPLIFIED", "NEUTRAL", "amplification", ("AMP", "NEUT")),
+    "deletion": ("DEEP-DELETED", "NEUTRAL", "deep deletion", ("DEL", "NEUT")),
+}
+_STRATIFY_ALIASES = {
+    "mut": "mutation",
+    "mutation": "mutation",
+    "mutated": "mutation",
+    "amp": "amplification",
+    "amplification": "amplification",
+    "amplified": "amplification",
+    "del": "deletion",
+    "deletion": "deletion",
+    "deleted": "deletion",
+    "deep deletion": "deletion",
+    "loss": "deletion",
+}
 
 
 def _benjamini_hochberg(pvalues):
@@ -1915,3 +2247,970 @@ def generate_sl_evidence_dossier(
             "check_dependency_confounders individually, to see the raw evidence."
         )
     return "\n\n".join(output)
+
+
+# ---------------------------------------------------------------------------
+# Tool 6: ovarian cancer mutation-stratified dependency analysis
+# ---------------------------------------------------------------------------
+def stratify_ovarian_cancer_dependency_by_mutation(
+    target_mutation: str,
+    histology: str | None = None,
+    stratify_by: str = "mutation",
+    data_lake_path: str | None = None,
+    mutation_csv_path: str | None = None,
+    candidate_genes=None,
+    restrict_to_synlethdb_partners: bool = False,
+    top_n: int = 25,
+    p_threshold: float = 0.05,
+    fdr_threshold: float = 0.25,
+    min_effect_difference: float = -0.2,
+    max_mutant_mean_effect: float = -0.3,
+    exclude_pan_essential: bool = True,
+    output_csv_path: str | None = None,
+    plot_output_prefix: str | None = None,
+) -> str:
+    """Find genes whose CRISPR knockout hits altered ovarian cancer lines harder than unaltered lines.
+
+    DepMap ovarian cell lines (OncotreeLineage "Ovary/Fallopian Tube", optionally restricted to one
+    histology such as high-grade serous) are split into an altered group and a control group by the
+    genotype of ``target_mutation``: somatic mutation (default), copy-number amplification, or deep
+    deletion. Amplification matters in ovarian cancer specifically because CCNE1, one of the central
+    HGSOC drivers, is an amplification event that mutation calls cannot see at all. Every tested gene
+    is compared between the two groups with a Welch t-test
+    (unequal variances, which is the right test here because the mutant group is usually much
+    smaller than the control group) on the Chronos gene-effect score, where more negative means
+    stronger dependency. The reported p-value is the one-sided p for the directional hypothesis
+    "altered lines are MORE depleted", multiplicity-corrected with Benjamini-Hochberg across the
+    genes actually tested. Surviving genes are annotated with SynLethDB evidence so that a hit
+    already recorded as a synthetic-lethal partner of the driver can be told apart from a novel one.
+
+    Parameters
+    ----------
+    target_mutation : str
+        HUGO symbol of the gene whose alteration defines the two groups, e.g. "BRCA1", "ARID1A",
+        "TP53", "CCNE1".
+    histology : str, optional
+        Restrict the cohort to one ovarian histology. Accepts "HGSOC" / "high-grade serous",
+        "clear cell", "endometrioid", "mucinous", "serous", or any substring of OncotreeSubtype.
+        Default: all ovarian tumour lines.
+    stratify_by : str, optional
+        Genotype event that splits the cohort: "mutation" (default), "amplification" (use for
+        CCNE1, MYC, ERBB2 and other amplification drivers) or "deletion" (homozygous loss, e.g.
+        PTEN, RB1). Copy-number calls come from a local DepMap OmicsCNGene.csv when present,
+        otherwise from the cBioPortal CCLE discrete CNA profile - no extra download is required.
+    data_lake_path : str, optional
+        Directory holding DepMap_CRISPRGeneEffect.csv, DepMap_Model.csv and (optionally)
+        synlethdb_human_sl.parquet, DepMap_OmicsCNGene.csv (default: "./data/biomni_data/data_lake").
+    mutation_csv_path : str, optional
+        Genotype table overriding the default call source, for any ``stratify_by`` mode. Columns:
+        ModelID, HugoSymbol[, ProteinChange] for mutations, or ModelID, HugoSymbol[, Alteration]
+        for copy number, where Alteration contains "AMP" or "DEL". Without it, a local DepMap file
+        is used when present, otherwise calls come from the cBioPortal CCLE study.
+    candidate_genes : list[str] | str, optional
+        Restrict testing to these genes (list, or comma/whitespace separated string). A focused
+        gene set makes the FDR correction far less punishing than a genome-wide scan.
+    restrict_to_synlethdb_partners : bool, optional
+        Test only genes recorded in SynLethDB as synthetic-lethal partners of ``target_mutation``
+        (default: False). Combines with ``candidate_genes`` as an intersection.
+    top_n : int, optional
+        Number of top candidates to print in detail (default: 25).
+    p_threshold : float, optional
+        One-sided Welch t-test p-value cutoff (default: 0.05).
+    fdr_threshold : float, optional
+        Benjamini-Hochberg q-value cutoff (default: 0.25). Set to 1.0 to disable FDR filtering.
+    min_effect_difference : float, optional
+        Required (altered-group mean - control-group mean) gene effect; must be negative (default: -0.2).
+    max_mutant_mean_effect : float, optional
+        The mutant group mean gene effect must be below this value, so that statistically
+        significant but biologically trivial differences are dropped (default: -0.3).
+    exclude_pan_essential : bool, optional
+        Drop common-essential genes depleted in >80% of all screened lines (default: True).
+    output_csv_path : str, optional
+        If given, the full ranked table (all tested genes) is written to this CSV path.
+    plot_output_prefix : str, optional
+        If given, writes "<prefix>_volcano.png" (all tested genes) and "<prefix>_boxplot.png"
+        (per-cell-line dependency of the top candidates in both groups) and reports their paths.
+
+    Returns
+    -------
+    str
+        A research log with the ovarian cohort composition, altered/control group membership,
+        the ranked differential-dependency table with SynLethDB annotation, QC warnings and
+        full provenance.
+
+    """
+    import numpy as np
+    import pandas as pd
+    from scipy import stats
+
+    driver = str(target_mutation).strip().upper()
+    mode = _STRATIFY_ALIASES.get(str(stratify_by).strip().lower())
+    if mode is None:
+        return (
+            f"FAILURE: stratify_by='{stratify_by}' is not recognised. Use one of "
+            f"{sorted(set(_STRATIFY_ALIASES.values()))}."
+        )
+    altered_label, control_label, event_name, (short_alt, short_ctrl) = _STRATIFY_MODES[mode]
+
+    log = [
+        "=" * 78,
+        f"OVARIAN CANCER {event_name.upper()}-STRATIFIED DEPENDENCY - {driver}"
+        + (f" ({histology})" if histology else " (all ovarian histologies)"),
+        f"Run at {datetime.now(tz=_UTC).strftime('%Y-%m-%d %H:%M UTC')}",
+        "=" * 78,
+        "",
+    ]
+
+    try:
+        groups = _ovarian_groups(driver, histology, mode, data_lake_path, mutation_csv_path)
+    except (FileNotFoundError, ValueError, RuntimeError) as e:
+        return f"FAILURE: {e}"
+
+    bundle = groups["bundle"]
+    gene_effect = bundle["gene_effect"]
+    cohort = groups["cohort"]
+    cohort_note = groups["cohort_note"]
+    genotype_source = groups["genotype_source"]
+    mutant_ids = groups["mutant_ids"]
+    wildtype_ids = groups["wildtype_ids"]
+    unknown_ids = groups["unknown_ids"]
+
+    # --- Step 1: ovarian cohort -------------------------------------------------------------
+    subtype_counts = cohort["OncotreeSubtype"].value_counts().to_dict()
+    log.append("STEP 1 | Ovarian cohort definition")
+    log.append(f"  {cohort_note}")
+    log.append(f"  Lines with CRISPR gene-effect data: {len(cohort)}")
+    log.append(f"  Histology composition: {subtype_counts}")
+
+    # --- Step 2: genotype stratification ------------------------------------------------------
+    log.append("")
+    log.append(f"STEP 2 | Genotype stratification ({event_name})")
+    log.append(f"  {event_name.capitalize()} source: {genotype_source}")
+    log.append(f"  {driver}-{altered_label} lines: {len(mutant_ids)}")
+    log.append(f"  {driver}-{control_label} lines: {len(wildtype_ids)}")
+    log.append(f"  Not profiled (excluded) : {len(unknown_ids)}")
+    variant_counts = cohort.loc[cohort["MutationStatus"] == "MUT", "Variant"].value_counts().head(6).to_dict()
+    if variant_counts:
+        log.append(f"  Alteration spectrum (top 6): {variant_counts}")
+    log.append(
+        f"  {altered_label}: "
+        f"{', '.join(cohort.loc[cohort['MutationStatus'] == 'MUT', 'StrippedCellLineName'].tolist())}"
+    )
+    log.append(
+        f"  {control_label}: "
+        f"{', '.join(cohort.loc[cohort['MutationStatus'] == 'WT', 'StrippedCellLineName'].tolist())}"
+    )
+
+    if len(mutant_ids) < 3 or len(wildtype_ids) < 3:
+        log.append("")
+        log.append(
+            f"FAILURE: insufficient group sizes ({altered_label.lower()} n={len(mutant_ids)}, "
+            f"{control_label.lower()} n={len(wildtype_ids)}); "
+            "at least 3 per group are required for a Welch t-test. Drop the `histology` filter, or use "
+            "discover_synthetic_lethal_candidates with cancer_type='pan-cancer' for a larger cohort."
+        )
+        return "\n".join(log)
+
+    # --- Step 3: gene set to test -------------------------------------------------------------
+    synlethdb = _load_synlethdb(bundle["data_lake_path"])
+    partners = _synlethdb_partners(driver, bundle["data_lake_path"])
+
+    tested_columns = list(gene_effect.columns)
+    restriction_notes = []
+    requested = _parse_gene_list(candidate_genes)
+    if requested:
+        keep = {bundle["gene_columns"][g] for g in requested if g in bundle["gene_columns"]}
+        missing = [g for g in requested if g not in bundle["gene_columns"]]
+        tested_columns = [c for c in tested_columns if c in keep]
+        restriction_notes.append(f"candidate_genes: {len(requested)} requested, {len(keep)} in the CRISPR library")
+        if missing:
+            restriction_notes.append(f"  not screened / unknown symbol: {', '.join(missing[:20])}")
+    if restrict_to_synlethdb_partners:
+        if synlethdb is None:
+            return (
+                "FAILURE: restrict_to_synlethdb_partners=True but synlethdb_human_sl.parquet was not found in "
+                f"{bundle['data_lake_path']}. Provide the file or set the flag to False."
+            )
+        keep = {bundle["gene_columns"][g] for g in partners if g in bundle["gene_columns"]}
+        tested_columns = [c for c in tested_columns if c in keep]
+        restriction_notes.append(
+            f"SynLethDB partners of {driver}: {len(partners)} recorded, {len(keep)} screened in DepMap"
+        )
+    if requested or restrict_to_synlethdb_partners:
+        # Keep the driver itself in the tested set, otherwise the self-dependency control below
+        # has nothing to check the mutation calls against.
+        driver_column = bundle["gene_columns"].get(driver)
+        if driver_column and driver_column not in tested_columns:
+            tested_columns.append(driver_column)
+    if len(tested_columns) == 0:
+        return (
+            f"FAILURE: the gene restriction left no testable gene. {'; '.join(restriction_notes)}"
+        )
+
+    # --- Step 4: differential dependency testing ----------------------------------------------
+    mutant_matrix = gene_effect.loc[mutant_ids, tested_columns]
+    wildtype_matrix = gene_effect.loc[wildtype_ids, tested_columns]
+    usable = mutant_matrix.columns[(mutant_matrix.notna().sum() >= 3) & (wildtype_matrix.notna().sum() >= 3)]
+    mutant_matrix = mutant_matrix[usable]
+    wildtype_matrix = wildtype_matrix[usable]
+
+    tstat, p_two_sided = stats.ttest_ind(
+        mutant_matrix.values, wildtype_matrix.values, axis=0, equal_var=False, nan_policy="omit"
+    )
+    tstat = np.asarray(tstat, dtype=float)
+    p_two_sided = np.asarray(p_two_sided, dtype=float)
+    p_two_sided = np.where(np.isfinite(p_two_sided), p_two_sided, 1.0)
+    # Directional hypothesis: the mutant group is MORE depleted, i.e. t < 0.
+    p_one_sided = np.where(tstat < 0, p_two_sided / 2.0, 1.0 - p_two_sided / 2.0)
+
+    mutant_mean = np.asarray(mutant_matrix.mean())
+    wildtype_mean = np.asarray(wildtype_matrix.mean())
+    pooled_sd = np.sqrt((np.asarray(mutant_matrix.std(ddof=1)) ** 2 + np.asarray(wildtype_matrix.std(ddof=1)) ** 2) / 2)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        cohens_d = np.where(pooled_sd > 0, (mutant_mean - wildtype_mean) / pooled_sd, np.nan)
+
+    # Pan-essentiality is judged across the whole screen, not just the ovarian cohort.
+    pan_fraction = (gene_effect[usable] < DEPLETION_THRESHOLD).sum() / gene_effect[usable].notna().sum()
+    mutant_dependent = (mutant_matrix < DEPLETION_THRESHOLD).sum() / mutant_matrix.notna().sum()
+    wildtype_dependent = (wildtype_matrix < DEPLETION_THRESHOLD).sum() / wildtype_matrix.notna().sum()
+
+    results = pd.DataFrame(
+        {
+            "gene": [c.split(" (")[0] for c in usable],
+            "n_mutant": np.asarray(mutant_matrix.notna().sum()),
+            "n_wildtype": np.asarray(wildtype_matrix.notna().sum()),
+            "mutant_mean_effect": mutant_mean,
+            "wildtype_mean_effect": wildtype_mean,
+            "effect_difference": mutant_mean - wildtype_mean,
+            "cohens_d": cohens_d,
+            "t_statistic": tstat,
+            "p_one_sided": p_one_sided,
+            "p_two_sided": p_two_sided,
+            "q_value": _benjamini_hochberg(p_one_sided),
+            "pct_mutant_dependent": np.asarray(mutant_dependent) * 100,
+            "pct_wildtype_dependent": np.asarray(wildtype_dependent) * 100,
+            "pct_all_lines_dependent": np.asarray(pan_fraction) * 100,
+        }
+    )
+    results["pan_essential"] = results["pct_all_lines_dependent"] >= PAN_ESSENTIAL_FRACTION * 100
+    results["synlethdb_known"] = results["gene"].str.upper().isin(partners)
+    results["synlethdb_evidence"] = results["gene"].str.upper().map(
+        lambda g: ";".join(partners[g]["sources"]) if g in partners else ""
+    )
+    results["synlethdb_tier"] = results["gene"].str.upper().map(
+        lambda g: _SYNLETHDB_TIER_NAME[partners[g]["tier"]] if g in partners else ""
+    )
+    # Rank over all tested genes, used below to state where known SL partners land.
+    results["rank_by_delta"] = results["effect_difference"].rank(method="min").astype(int)
+
+    log.append("")
+    log.append(
+        f"STEP 3 | Differential dependency testing (Welch t-test, {altered_label.lower()} vs {control_label.lower()})"
+    )
+    for note in restriction_notes:
+        log.append(f"  {note}")
+    log.append(f"  Genes tested: {len(results)} (of {gene_effect.shape[1]} in the CRISPR library)")
+    log.append(
+        f"  One-sided p < {p_threshold} ({altered_label.lower()} more depleted): "
+        f"{(results['p_one_sided'] < p_threshold).sum()}"
+    )
+    log.append(f"  BH q < {fdr_threshold}: {(results['q_value'] < fdr_threshold).sum()}")
+
+    # --- Step 5: filtering / QC ---------------------------------------------------------------
+    selected = results[
+        (results["p_one_sided"] < p_threshold)
+        & (results["q_value"] < fdr_threshold)
+        & (results["effect_difference"] <= min_effect_difference)
+        & (results["mutant_mean_effect"] <= max_mutant_mean_effect)
+    ].copy()
+    n_before_pan = len(selected)
+    if exclude_pan_essential:
+        selected = selected[~selected["pan_essential"]]
+    selected = selected.sort_values(["effect_difference", "p_one_sided"]).reset_index(drop=True)
+    selected.insert(0, "rank", np.arange(1, len(selected) + 1))
+
+    log.append("")
+    log.append("STEP 4 | Filtering and quality control")
+    log.append(f"  After significance + effect-size filters: {n_before_pan}")
+    log.append(
+        f"  Pan-essential removed (depleted in >{PAN_ESSENTIAL_FRACTION:.0%} of all "
+        f"{gene_effect.shape[0]} screened lines): {n_before_pan - len(selected)}"
+    )
+    log.append(f"  Final candidate count: {len(selected)}")
+
+    control = results[results["gene"].str.upper() == driver]
+    if len(control):
+        row = control.iloc[0]
+        right_direction = row["effect_difference"] <= min_effect_difference
+        if right_direction and row["p_one_sided"] < p_threshold:
+            verdict = "PASS"
+        elif right_direction:
+            verdict = "WEAK"
+        else:
+            verdict = "FAIL"
+        log.append(
+            f"  Self-dependency control ({verdict}): {driver} itself delta={row['effect_difference']:.3f}, "
+            f"p1={row['p_one_sided']:.2e} ({altered_label} {row['mutant_mean_effect']:.3f} vs "
+            f"{control_label} {row['wildtype_mean_effect']:.3f})."
+        )
+        if verdict == "WEAK":
+            log.append(
+                "    The self-dependency has the right direction and size but misses the p cutoff - that is a "
+                "power limit of these group sizes, not a contradiction of the genotype calls."
+            )
+        elif verdict == "FAIL" and mode == "amplification":
+            log.append(
+                "    WARNING: an amplified oncogene should be a self-dependency in its own amplified lines. "
+                "A FAIL here means the copy-number calls or the cohort are mis-specified, and every candidate "
+                "below should be treated as unreliable until that is resolved."
+            )
+        elif verdict == "FAIL":
+            log.append(
+                "    Note: a FAIL is expected for a tumour suppressor (loss-of-function drivers are not "
+                "self-dependencies) but is a red flag for an oncogene / amplification driver."
+            )
+    else:
+        log.append(f"  Self-dependency control unavailable: {driver} was not among the tested genes.")
+
+    if synlethdb is None:
+        log.append("  SynLethDB annotation unavailable: synlethdb_human_sl.parquet not found in the data lake.")
+    else:
+        tested_partners = results[results["synlethdb_known"]]
+        selected_partners = selected[selected["synlethdb_known"]] if len(selected) else selected
+        log.append(
+            f"  SynLethDB: {len(partners)} known SL partners of {driver}, {len(tested_partners)} of them tested here, "
+            f"{len(selected_partners)} in the final candidate list."
+        )
+        if len(tested_partners):
+            best = tested_partners.nsmallest(5, "effect_difference")
+            log.append(
+                "    Best-ranking known partners (rank of "
+                f"{len(results)} tested, by delta): "
+                + ", ".join(
+                    f"{r['gene']}#{r['rank_by_delta']} (delta={r['effect_difference']:.3f}, p1={r['p_one_sided']:.1e})"
+                    for _, r in best.iterrows()
+                )
+            )
+            log.append(
+                "    Known partners are a calibration read-out, not a filter: if none of them rank anywhere "
+                "near the top, the cohort is underpowered and the novel hits below are unreliable."
+            )
+
+    warnings = []
+    if len(mutant_ids) < 8 or len(wildtype_ids) < 8:
+        warnings.append(
+            f"Low power: {altered_label.lower()} n={len(mutant_ids)}, {control_label.lower()} "
+            f"n={len(wildtype_ids)}. A single outlier line can "
+            "create or destroy a candidate; treat p-values as descriptive and replicate in a larger cohort."
+        )
+    mutant_fraction = len(mutant_ids) / (len(mutant_ids) + len(wildtype_ids))
+    if mutant_fraction > 0.9 or mutant_fraction < 0.1:
+        warnings.append(
+            f"Unbalanced groups ({mutant_fraction:.0%} {altered_label.lower()}). For near-universal ovarian "
+            "drivers such as TP53 in "
+            "high-grade serous disease the wild-type group is not a comparable control - the few TP53-wild-type "
+            "ovarian lines are usually a different histology altogether."
+        )
+    if len(unknown_ids):
+        warnings.append(
+            f"{len(unknown_ids)} lines had no {event_name} call and were excluded rather than assumed "
+            f"{control_label.lower()}."
+        )
+    if len(subtype_counts) > 1:
+        warnings.append(
+            f"The cohort mixes {len(subtype_counts)} histologies {subtype_counts}; histology, not the mutation, "
+            "may drive some contrasts. Re-run with `histology` set to test within one subtype."
+        )
+    if synlethdb is not None and synlethdb["constant_score"]:
+        warnings.append(
+            "SynLethDB `score` is constant (1.0) in this snapshot, so it cannot rank confidence; the evidence "
+            "tier printed per candidate comes from the `source` field instead, and 'Computational Prediction' or "
+            "'Text Mining' support is not experimental validation."
+        )
+    if mode == "mutation":
+        warnings.append(
+            "Mutation calls are presence/absence of any protein-altering variant - they do not distinguish "
+            "loss-of-function from VUS, monoallelic from biallelic loss, or mutation from BRCA1 promoter "
+            "methylation, which is a common HR-deficiency mechanism in ovarian cancer and leaves such lines in "
+            "the wild-type group."
+        )
+    else:
+        warnings.append(
+            f"{event_name.capitalize()} is a DNA-level call: it does not prove the gene is over- or "
+            "under-expressed in these lines. Confirm with the DepMap expression matrix "
+            "(check_dependency_confounders does this) before treating the copy-number group as a functional one."
+        )
+        if "cBioPortal" in genotype_source:
+            warnings.append(
+                "Copy-number calls come from the cBioPortal CCLE 2019 snapshot as discrete GISTIC-style values "
+                "(-2/0/2 only, matched by cell line name), not from the current DepMap release. Shallow "
+                "single-copy events are invisible, and a few lines may fail name matching. Put a current "
+                "OmicsCNGene.csv in the data lake as DepMap_OmicsCNGene.csv to use continuous DepMap calls instead."
+            )
+    warnings.append(
+        "Single-gene knockout dependency in cell lines is correlative evidence for a genotype-selective "
+        "vulnerability, not a validated synthetic lethal interaction."
+    )
+
+    log.append("")
+    log.append("QC WARNINGS (falsification checklist)")
+    for warning in warnings:
+        log.append(f"  - {warning}")
+
+    # --- Step 6: report -----------------------------------------------------------------------
+    log.append("")
+    log.append(f"TOP {min(top_n, len(selected))} {altered_label}-SELECTIVE DEPENDENCIES")
+    log.append(
+        f"{'rank':<5}{'gene':<12}{short_alt + ' mean':>10}{short_ctrl + ' mean':>10}"
+        f"{'delta':>9}{'d':>7}"
+        f"{'p(1-sided)':>12}{'q':>9}{'%alt dep':>10}{'%all dep':>10}  SynLethDB"
+    )
+    log.append("-" * 105)
+    for _, row in selected.head(top_n).iterrows():
+        sl_note = f"known: {row['synlethdb_tier']}" if row["synlethdb_known"] else "-"
+        log.append(
+            f"{int(row['rank']):<5}{row['gene']:<12}{row['mutant_mean_effect']:>10.3f}"
+            f"{row['wildtype_mean_effect']:>10.3f}{row['effect_difference']:>9.3f}{row['cohens_d']:>7.2f}"
+            f"{row['p_one_sided']:>12.2e}{row['q_value']:>9.3f}{row['pct_mutant_dependent']:>9.0f}%"
+            f"{row['pct_all_lines_dependent']:>9.0f}%  {sl_note}"
+        )
+
+    if len(selected) == 0:
+        # An empty table is the normal outcome of a genome-wide FDR gate on a cohort this small, so
+        # report what the run actually saw instead of nothing. These are NOT candidates.
+        runners = results[
+            (results["p_one_sided"] < p_threshold)
+            & (results["effect_difference"] <= min_effect_difference)
+            & (results["mutant_mean_effect"] <= max_mutant_mean_effect)
+        ]
+        if exclude_pan_essential:
+            runners = runners[~runners["pan_essential"]]
+        runners = runners.sort_values(["effect_difference", "p_one_sided"]).head(top_n)
+        log.append("")
+        log.append(
+            f"NO GENE SURVIVED THE FDR GATE (q < {fdr_threshold}). Nominally significant runners-up "
+            f"(p < {p_threshold} but NOT significant after correction for {len(results)} tests):"
+        )
+        for _, row in runners.iterrows():
+            sl_note = f"  [SynLethDB known: {row['synlethdb_tier']}]" if row["synlethdb_known"] else ""
+            log.append(
+                f"  {row['gene']:<12}{short_alt} {row['mutant_mean_effect']:>7.3f}  "
+                f"{short_ctrl} {row['wildtype_mean_effect']:>7.3f}  "
+                f"delta {row['effect_difference']:>7.3f}  p1 {row['p_one_sided']:.2e}  q {row['q_value']:.3f}{sl_note}"
+            )
+        advice = (
+            "widen the cohort (drop `histology`, or use discover_synthetic_lethal_candidates with "
+            "cancer_type='pan-cancer') - the gene set is already as small as this analysis can make it"
+            if restrict_to_synlethdb_partners
+            else "pass `candidate_genes` (a pathway or druggable gene set) or `restrict_to_synlethdb_partners=True`"
+        )
+        log.append(
+            "  These are hypotheses at nominal significance only. To get a calibrated candidate list, shrink the "
+            f"multiple-testing burden rather than raising the FDR cutoff: {advice}. An altered group of this size "
+            "cannot clear BH correction over a large gene set, which is a power limit of the cohort, not evidence "
+            "of no effect."
+        )
+
+    candidate_list = [g for g in selected["gene"].head(top_n).tolist() if g.upper() != driver]
+    log.append("")
+    log.append(f"CANDIDATE_GENES: {', '.join(candidate_list)}")
+    log.append(
+        "  (pass this list to validate_sl_candidates_with_pubmed, analyze_ppi_network_for_sl and "
+        "check_dependency_confounders for literature, network and confounder evidence)"
+    )
+
+    if output_csv_path:
+        os.makedirs(os.path.dirname(os.path.abspath(output_csv_path)), exist_ok=True)
+        results.sort_values(["effect_difference", "p_one_sided"]).to_csv(output_csv_path, index=False)
+        log.append(f"  Full table of all {len(results)} tested genes written to {output_csv_path}")
+
+    if plot_output_prefix:
+        log.append("")
+        log.append("FIGURES")
+        cohort_title = (
+            "ovarian" + (f" ({histology})" if histology else "")
+            + f": {altered_label} n={len(mutant_ids)} vs {control_label} n={len(wildtype_ids)}"
+        )
+        volcano_path = f"{plot_output_prefix}_volcano.png"
+        try:
+            counts = _draw_volcano(
+                results, volcano_path, f"{driver} {event_name} - {cohort_title}", p_threshold, fdr_threshold,
+                min_effect_difference, exclude_pan_essential, 15,
+            )
+            log.append(
+                f"  Volcano plot: {volcano_path} ({counts['n_total']} genes, {counts['n_selected']} significant, "
+                f"{counts['n_nominal']} nominal only)"
+            )
+        except Exception as e:  # a plotting failure must never lose the analysis above
+            log.append(f"  Volcano plot FAILED: {e}")
+
+        if len(selected):
+            plot_genes = selected["gene"].head(8).tolist()
+            plot_note = "top candidates"
+        else:
+            fallback = results[
+                (results["p_one_sided"] < p_threshold)
+                & (results["effect_difference"] <= min_effect_difference)
+                & (results["mutant_mean_effect"] <= max_mutant_mean_effect)
+            ]
+            if exclude_pan_essential:
+                fallback = fallback[~fallback["pan_essential"]]
+            plot_genes = fallback.nsmallest(8, "effect_difference")["gene"].tolist()
+            plot_note = "nominally significant runners-up - no gene cleared the FDR gate"
+        boxplot_path = f"{plot_output_prefix}_boxplot.png"
+        if plot_genes:
+            try:
+                _draw_dependency_boxplot(
+                    bundle, cohort, mutant_ids, wildtype_ids, plot_genes,
+                    (altered_label, control_label), boxplot_path,
+                    f"CRISPR dependency by {driver} {event_name} status - {cohort_title}",
+                )
+                log.append(f"  Boxplot: {boxplot_path} ({plot_note}: {', '.join(plot_genes)})")
+            except Exception as e:
+                log.append(f"  Boxplot FAILED: {e}")
+        else:
+            log.append("  Boxplot skipped: no gene passed even the nominal significance and effect-size filters.")
+
+    log.append("")
+    log.append("PROVENANCE")
+    for item in bundle["provenance"]:
+        log.append(f"  - {item}")
+    log.append(f"  - {event_name.capitalize()} calls: {genotype_source}")
+    if synlethdb is not None:
+        log.append(f"  - {synlethdb['provenance']}")
+    log.append(
+        f"  - Statistics: Welch two-sample t-test (equal_var=False) on Chronos gene effect, one-sided for "
+        f"'{altered_label.lower()} more depleted', BH-FDR across {len(results)} tested genes; depletion threshold "
+        f"{DEPLETION_THRESHOLD}, pan-essential cutoff {PAN_ESSENTIAL_FRACTION:.0%}"
+    )
+    return "\n".join(log)
+
+
+# ---------------------------------------------------------------------------
+# Visualisation
+# ---------------------------------------------------------------------------
+# Group colours are kept fixed across every figure so that "altered" always reads as the same
+# colour whether the stratifying event is a mutation, an amplification or a deletion.
+ALTERED_COLOR = "#d1495b"
+CONTROL_COLOR = "#00798c"
+
+
+def _apply_plot_style():
+    """Headless-safe matplotlib/seaborn setup. Must run before pyplot is used."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import seaborn as sns
+
+    sns.set_theme(style="whitegrid", context="notebook")
+    return sns
+
+
+def _ovarian_groups(
+    driver: str,
+    histology: str | None,
+    mode: str,
+    data_lake_path: str | None,
+    genotype_csv_path: str | None,
+) -> dict:
+    """Build the ovarian cohort and split it into altered / control groups.
+
+    Shared by the analysis tool and the plotting tools so that a figure always shows exactly the
+    cell lines the statistics were computed on. Raises ValueError / RuntimeError with a
+    human-readable message when the cohort cannot be built.
+    """
+    bundle = _load_depmap(data_lake_path)
+    gene_effect = bundle["gene_effect"]
+
+    cohort, cohort_note = _select_ovarian_models(bundle["model"], histology)
+    cohort = cohort[cohort["ModelID"].isin(gene_effect.index)]
+    if len(cohort) == 0:
+        subtypes = sorted(_select_ovarian_models(bundle["model"])[0]["OncotreeSubtype"].dropna().unique().tolist())
+        raise ValueError(
+            f"no ovarian DepMap line with CRISPR data matched histology='{histology}'. "
+            f"Available ovarian subtypes: {subtypes}"
+        )
+
+    if mode == "mutation":
+        cohort, genotype_source = _annotate_mutation_status(
+            cohort, driver, bundle["data_lake_path"], genotype_csv_path
+        )
+    else:
+        cohort, genotype_source = _annotate_copy_number_status(
+            cohort, driver, bundle["data_lake_path"], mode, genotype_csv_path
+        )
+
+    return {
+        "bundle": bundle,
+        "cohort": cohort,
+        "cohort_note": cohort_note,
+        "genotype_source": genotype_source,
+        "mutant_ids": cohort.loc[cohort["MutationStatus"] == "MUT", "ModelID"].tolist(),
+        "wildtype_ids": cohort.loc[cohort["MutationStatus"] == "WT", "ModelID"].tolist(),
+        "unknown_ids": cohort.loc[cohort["MutationStatus"] == "UNKNOWN", "ModelID"].tolist(),
+    }
+
+
+def _draw_dependency_boxplot(
+    bundle: dict,
+    cohort,
+    mutant_ids: list,
+    wildtype_ids: list,
+    genes: list,
+    labels: tuple,
+    output_path: str,
+    title: str,
+) -> tuple:
+    """Draw one box + strip panel per gene comparing gene effect between the two groups."""
+    import numpy as np
+    import pandas as pd
+    from scipy import stats
+
+    sns = _apply_plot_style()
+    import matplotlib.pyplot as plt
+
+    altered_label, control_label = labels
+    gene_effect = bundle["gene_effect"]
+    name_by_model = dict(zip(cohort["ModelID"], cohort["StrippedCellLineName"], strict=False))
+
+    plotted, skipped = [], []
+    records = []
+    for gene in genes:
+        column = bundle["gene_columns"].get(gene.upper())
+        if column is None:
+            skipped.append(gene)
+            continue
+        plotted.append(gene)
+        for group, model_ids in ((altered_label, mutant_ids), (control_label, wildtype_ids)):
+            values = gene_effect.loc[model_ids, column].dropna()
+            for model_id, value in values.items():
+                records.append(
+                    {
+                        "gene": gene.upper(),
+                        "group": group,
+                        "gene_effect": float(value),
+                        "cell_line": name_by_model.get(model_id, model_id),
+                    }
+                )
+    if not plotted:
+        raise ValueError(f"none of the requested genes are in the CRISPR library: {', '.join(genes)}")
+
+    frame = pd.DataFrame(records)
+    n_columns = min(4, len(plotted))
+    n_rows = int(np.ceil(len(plotted) / n_columns))
+    # Shared y: the panels are all in the same gene-effect units, so a per-panel axis would make
+    # a weak difference look as dramatic as a strong one.
+    figure, axes = plt.subplots(
+        n_rows, n_columns, figsize=(3.4 * n_columns, 3.9 * n_rows), squeeze=False, sharey=True
+    )
+
+    palette = {altered_label: ALTERED_COLOR, control_label: CONTROL_COLOR}
+    for index, gene in enumerate(plotted):
+        axis = axes[index // n_columns][index % n_columns]
+        subset = frame[frame["gene"] == gene.upper()]
+        sns.boxplot(
+            data=subset, x="group", y="gene_effect", hue="group", order=[altered_label, control_label],
+            palette=palette, width=0.55, showfliers=False, legend=False, ax=axis,
+        )
+        sns.stripplot(
+            data=subset, x="group", y="gene_effect", order=[altered_label, control_label],
+            color="0.2", size=4, jitter=0.18, alpha=0.75, ax=axis,
+        )
+
+        altered_values = subset.loc[subset["group"] == altered_label, "gene_effect"].to_numpy()
+        control_values = subset.loc[subset["group"] == control_label, "gene_effect"].to_numpy()
+        delta = float(np.mean(altered_values) - np.mean(control_values))
+        tstat, p_two = stats.ttest_ind(altered_values, control_values, equal_var=False)
+        p_one = p_two / 2 if tstat < 0 else 1 - p_two / 2
+
+        # 0 = no effect, -0.5 = the depletion call used throughout this module.
+        axis.axhline(0, color="0.35", linewidth=0.9)
+        axis.axhline(DEPLETION_THRESHOLD, color="0.55", linewidth=0.9, linestyle="--")
+        axis.set_title(
+            f"{gene.upper()}\n$\\Delta$={delta:+.3f}, one-sided p={p_one:.1e}\n"
+            f"n={len(altered_values)} vs {len(control_values)}",
+            fontsize=10,
+        )
+        axis.set_xlabel("")
+        axis.set_ylabel("CRISPR gene effect (Chronos)" if index % n_columns == 0 else "")
+        axis.tick_params(axis="x", labelsize=9)
+
+    for empty in range(len(plotted), n_rows * n_columns):
+        axes[empty // n_columns][empty % n_columns].axis("off")
+
+    figure.suptitle(title, fontsize=12, y=0.995)
+    figure.text(
+        0.5, 0.005,
+        "More negative = stronger dependency. Dashed line = depletion threshold "
+        f"({DEPLETION_THRESHOLD}); solid line = no effect.",
+        ha="center", fontsize=8.5, color="0.35",
+    )
+    figure.tight_layout(rect=(0, 0.02, 1, 0.98))
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    figure.savefig(output_path, dpi=200, bbox_inches="tight")
+    plt.close(figure)
+    return plotted, skipped
+
+
+def _draw_volcano(
+    results,
+    output_path: str,
+    title: str,
+    p_threshold: float,
+    fdr_threshold: float,
+    min_effect_difference: float,
+    exclude_pan_essential: bool,
+    label_top: int,
+) -> dict:
+    """Draw effect difference vs -log10(one-sided p) over every tested gene."""
+    import numpy as np
+
+    _apply_plot_style()
+    import matplotlib.pyplot as plt
+
+    frame = results.copy()
+    if "p_one_sided" not in frame.columns and "p_value" in frame.columns:
+        frame["p_one_sided"] = frame["p_value"]
+    for required in ("gene", "effect_difference", "p_one_sided"):
+        if required not in frame.columns:
+            raise ValueError(f"the results table needs a '{required}' column; found {list(frame.columns)}")
+    if "q_value" not in frame.columns:
+        frame["q_value"] = np.nan
+    if "pan_essential" not in frame.columns:
+        frame["pan_essential"] = False
+    if "synlethdb_known" not in frame.columns:
+        frame["synlethdb_known"] = False
+
+    # A p of exactly 0 would be an infinite y; clip to the smallest representable p instead.
+    frame["neg_log10_p"] = -np.log10(np.clip(frame["p_one_sided"].astype(float), 1e-300, 1.0))
+
+    passes_effect = (frame["effect_difference"] <= min_effect_difference) & (frame["p_one_sided"] < p_threshold)
+    passes_fdr = frame["q_value"] < fdr_threshold
+    is_pan = frame["pan_essential"].fillna(False).astype(bool)
+    selected = passes_effect & passes_fdr & ~(is_pan if exclude_pan_essential else False)
+    nominal = passes_effect & ~selected & ~is_pan
+
+    figure, axis = plt.subplots(figsize=(9, 7))
+    background = frame[~(selected | nominal | is_pan)]
+    axis.scatter(
+        background["effect_difference"], background["neg_log10_p"],
+        s=8, color="0.75", alpha=0.45, linewidths=0, rasterized=True, label="not significant",
+    )
+    pan = frame[is_pan]
+    if len(pan):
+        axis.scatter(
+            pan["effect_difference"], pan["neg_log10_p"],
+            s=14, color="0.45", alpha=0.6, marker="x", linewidths=0.8,
+            label=f"pan-essential (>{PAN_ESSENTIAL_FRACTION:.0%} of all lines)",
+        )
+    axis.scatter(
+        frame.loc[nominal, "effect_difference"], frame.loc[nominal, "neg_log10_p"],
+        s=26, color="#f0a202", alpha=0.85, linewidths=0, label=f"nominal only (p < {p_threshold})",
+    )
+    axis.scatter(
+        frame.loc[selected, "effect_difference"], frame.loc[selected, "neg_log10_p"],
+        s=48, color=ALTERED_COLOR, edgecolor="black", linewidths=0.5,
+        label=f"significant (q < {fdr_threshold})",
+    )
+    known = frame[(selected | nominal) & frame["synlethdb_known"].fillna(False).astype(bool)]
+    if len(known):
+        axis.scatter(
+            known["effect_difference"], known["neg_log10_p"],
+            s=150, facecolor="none", edgecolor="#2e294e", linewidths=1.4, label="known SynLethDB partner",
+        )
+
+    axis.axvline(0, color="0.35", linewidth=0.9)
+    axis.axvline(min_effect_difference, color="0.5", linestyle="--", linewidth=0.9)
+    axis.axhline(-np.log10(p_threshold), color="0.5", linestyle="--", linewidth=0.9)
+
+    # Label the strongest hits, skipping any label that would sit on top of one already placed -
+    # in a genome-wide run the significant region is dense enough that unfiltered labels overlap
+    # into an unreadable block. Candidates are drawn from a wider pool so the quota is still filled.
+    labelled = frame[selected | nominal]
+    x_min, x_max = axis.get_xlim()
+    y_min, y_max = axis.get_ylim()
+    x_span = (x_max - x_min) or 1.0
+    y_span = (y_max - y_min) or 1.0
+    placed: list[tuple] = []
+    for _, row in labelled.nsmallest(label_top * 4, "effect_difference").iterrows():
+        if len(placed) >= label_top:
+            break
+        fraction_x = (row["effect_difference"] - x_min) / x_span
+        fraction_y = (row["neg_log10_p"] - y_min) / y_span
+        if any(abs(fraction_x - px) < 0.05 and abs(fraction_y - py) < 0.028 for px, py in placed):
+            continue
+        placed.append((fraction_x, fraction_y))
+        axis.annotate(
+            row["gene"], (row["effect_difference"], row["neg_log10_p"]),
+            textcoords="offset points", xytext=(5, 4), fontsize=9,
+            color="#2e294e" if row["synlethdb_known"] else "0.15",
+        )
+
+    axis.set_xlabel(
+        "Effect difference (altered mean - control mean gene effect)\n"
+        "left = stronger dependency in the altered group"
+    )
+    axis.set_ylabel("$-\\log_{10}$(one-sided p)")
+    axis.set_title(title, fontsize=12)
+    axis.legend(loc="upper right", frameon=True, fontsize=9)
+    figure.tight_layout()
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    figure.savefig(output_path, dpi=200, bbox_inches="tight")
+    plt.close(figure)
+    return {
+        "n_total": len(frame),
+        "n_selected": int(selected.sum()),
+        "n_nominal": int(nominal.sum()),
+        "n_pan_essential": int(is_pan.sum()),
+    }
+
+
+def plot_dependency_boxplot(
+    target_mutation: str,
+    genes,
+    output_path: str,
+    histology: str | None = None,
+    stratify_by: str = "mutation",
+    data_lake_path: str | None = None,
+    mutation_csv_path: str | None = None,
+) -> str:
+    """Plot per-cell-line CRISPR dependency of target genes in altered vs control ovarian lines.
+
+    One box-and-strip panel per gene, with every cell line shown as a point so that a "difference"
+    driven by one or two outlier lines is visible rather than hidden behind a mean. The groups are
+    built exactly as in ``stratify_ovarian_cancer_dependency_by_mutation``, so a figure always
+    matches the statistics reported there.
+
+    Parameters
+    ----------
+    target_mutation : str
+        HUGO symbol of the gene whose alteration defines the two groups, e.g. "BRCA1", "CCNE1".
+    genes : list[str] | str
+        Target genes to plot (list, or comma/whitespace separated string), e.g. the CANDIDATE_GENES
+        line of a discovery run. Genes absent from the CRISPR library are reported and skipped.
+    output_path : str
+        Where to write the PNG.
+    histology : str, optional
+        Ovarian histology filter, e.g. "HGSOC", "clear cell". Default: all ovarian tumour lines.
+    stratify_by : str, optional
+        "mutation" (default), "amplification" or "deletion".
+    data_lake_path : str, optional
+        Directory holding the DepMap files (default: "./data/biomni_data/data_lake").
+    mutation_csv_path : str, optional
+        Genotype table overriding the default call source (see the analysis tool for the columns).
+
+    Returns
+    -------
+    str
+        A short log with the figure path, group sizes, genotype-call provenance and any skipped gene.
+
+    """
+    driver = str(target_mutation).strip().upper()
+    mode = _STRATIFY_ALIASES.get(str(stratify_by).strip().lower())
+    if mode is None:
+        return f"FAILURE: stratify_by='{stratify_by}' is not recognised. Use one of {sorted(set(_STRATIFY_ALIASES.values()))}."
+    altered_label, control_label, event_name, _ = _STRATIFY_MODES[mode]
+
+    gene_list = _parse_gene_list(genes)
+    if not gene_list:
+        return "FAILURE: no gene was requested. Pass `genes` as a list or a comma separated string."
+
+    try:
+        groups = _ovarian_groups(driver, histology, mode, data_lake_path, mutation_csv_path)
+    except (FileNotFoundError, ValueError, RuntimeError) as e:
+        return f"FAILURE: {e}"
+
+    mutant_ids, wildtype_ids = groups["mutant_ids"], groups["wildtype_ids"]
+    if len(mutant_ids) < 2 or len(wildtype_ids) < 2:
+        return (
+            f"FAILURE: insufficient group sizes ({altered_label.lower()} n={len(mutant_ids)}, "
+            f"{control_label.lower()} n={len(wildtype_ids)}) to plot a comparison."
+        )
+
+    cohort_title = "ovarian" + (f" ({histology})" if histology else "")
+    try:
+        plotted, skipped = _draw_dependency_boxplot(
+            groups["bundle"], groups["cohort"], mutant_ids, wildtype_ids, gene_list,
+            (altered_label, control_label), output_path,
+            f"CRISPR dependency by {driver} {event_name} status - {cohort_title} "
+            f"({altered_label} n={len(mutant_ids)} vs {control_label} n={len(wildtype_ids)})",
+        )
+    except ValueError as e:
+        return f"FAILURE: {e}"
+
+    log = [
+        f"Boxplot written to {output_path}",
+        f"  Genes plotted: {', '.join(plotted)}",
+        f"  Groups: {altered_label} n={len(mutant_ids)} vs {control_label} n={len(wildtype_ids)}",
+        f"  {event_name.capitalize()} calls: {groups['genotype_source']}",
+    ]
+    if skipped:
+        log.append(f"  Skipped (not in the CRISPR library): {', '.join(skipped)}")
+    log.append(
+        "  Each point is one cell line; per-panel delta and one-sided Welch p are recomputed from the "
+        "plotted values, so the figure and the numbers cannot drift apart."
+    )
+    return "\n".join(log)
+
+
+def plot_dependency_volcano(
+    results_csv_path: str,
+    output_path: str,
+    title: str | None = None,
+    p_threshold: float = 0.05,
+    fdr_threshold: float = 0.25,
+    min_effect_difference: float = -0.2,
+    exclude_pan_essential: bool = True,
+    label_top: int = 15,
+) -> str:
+    """Draw a volcano plot from a dependency table written by the ovarian stratification tool.
+
+    x is the effect difference (altered mean - control mean gene effect, so negative = the altered
+    group is more dependent) and y is -log10 of the one-sided p-value. Genes passing the FDR gate
+    are highlighted and labelled, genes that are only nominally significant are shown in a second
+    colour, pan-essential genes are marked separately so that a common-essential gene is never
+    mistaken for a selective vulnerability, and known SynLethDB partners are ringed.
+
+    Parameters
+    ----------
+    results_csv_path : str
+        CSV written by ``stratify_ovarian_cancer_dependency_by_mutation(output_csv_path=...)``, or
+        any table with at least gene, effect_difference and p_one_sided columns.
+    output_path : str
+        Where to write the PNG.
+    title : str, optional
+        Figure title. Defaults to the CSV file name.
+    p_threshold, fdr_threshold, min_effect_difference, exclude_pan_essential : optional
+        Thresholds used to colour the points; pass the same values as the analysis run.
+    label_top : int, optional
+        Number of gene labels to draw, taken from the strongest effect differences (default: 15).
+
+    Returns
+    -------
+    str
+        A short log with the figure path and the point counts per category.
+
+    """
+    import pandas as pd
+
+    if not os.path.exists(results_csv_path):
+        return f"FAILURE: {results_csv_path} does not exist. Run the analysis with output_csv_path first."
+    frame = pd.read_csv(results_csv_path)
+    try:
+        counts = _draw_volcano(
+            frame, output_path, title or f"Differential dependency - {os.path.basename(results_csv_path)}",
+            p_threshold, fdr_threshold, min_effect_difference, exclude_pan_essential, label_top,
+        )
+    except ValueError as e:
+        return f"FAILURE: {e}"
+
+    return "\n".join(
+        [
+            f"Volcano plot written to {output_path}",
+            f"  Genes plotted: {counts['n_total']}",
+            f"  Significant (q < {fdr_threshold}): {counts['n_selected']}",
+            f"  Nominal only (p < {p_threshold}): {counts['n_nominal']}",
+            f"  Pan-essential, marked separately: {counts['n_pan_essential']}",
+            f"  Source table: {results_csv_path}",
+        ]
+    )

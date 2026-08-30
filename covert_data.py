@@ -19,3 +19,5 @@ table = table[(table.gene_a != table.gene_b) & (table.gene_a != "NAN") & (table.
 output_path = "/data2/home/delee/biomni/data/biomni_data/data_lake/synlethdb_human_sl.parquet"
 table.to_parquet(output_path, index=False)
 print(f"변환 완료! {len(table)}개의 유전자 쌍이 성공적으로 저장되었습니다.")
+
+print(table.head())

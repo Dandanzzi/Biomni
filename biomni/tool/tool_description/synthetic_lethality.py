@@ -333,4 +333,237 @@ description = [
             },
         ],
     },
+    {
+        "description": "Stratify DepMap ovarian cancer cell lines (optionally one histology such as high-grade "
+        "serous or clear cell) into an altered and a control group by a driver gene's somatic mutation, copy-number "
+        "amplification (e.g. CCNE1) or deep deletion, then compare CRISPR gene dependency between the groups with a "
+        "one-sided Welch t-test to find target genes that are significantly more essential when the alteration is "
+        "present. Candidates are annotated with SynLethDB known synthetic-lethal evidence and filtered for "
+        "pan-essentiality, with BH-FDR, QC warnings and provenance.",
+        "name": "stratify_ovarian_cancer_dependency_by_mutation",
+        "optional_parameters": [
+            {
+                "default": None,
+                "description": "Ovarian histology to restrict the cohort to: 'HGSOC'/'high-grade serous', "
+                "'clear cell', 'endometrioid', 'mucinous', 'serous', or any OncotreeSubtype substring. "
+                "Default: all ovarian tumour lines",
+                "name": "histology",
+                "type": "str",
+            },
+            {
+                "default": "mutation",
+                "description": "Genotype event that splits the cohort: 'mutation', 'amplification' (use for CCNE1, "
+                "MYC, ERBB2 and other amplification drivers that mutation calls cannot see) or 'deletion' "
+                "(homozygous loss, e.g. PTEN, RB1). Copy-number calls come from a local DepMap OmicsCNGene.csv "
+                "when present, otherwise from the cBioPortal CCLE discrete CNA profile - no extra download needed",
+                "name": "stratify_by",
+                "type": "str",
+            },
+            {
+                "default": None,
+                "description": "Directory holding DepMap_CRISPRGeneEffect.csv, DepMap_Model.csv and optionally "
+                "synlethdb_human_sl.parquet, DepMap_OmicsCNGene.csv (default: ./data/biomni_data/data_lake)",
+                "name": "data_lake_path",
+                "type": "str",
+            },
+            {
+                "default": None,
+                "description": "Optional genotype table overriding the default call source in any stratify_by "
+                "mode: ModelID, HugoSymbol[, ProteinChange] for mutations, or ModelID, HugoSymbol[, Alteration] "
+                "containing 'AMP'/'DEL' for copy number",
+                "name": "mutation_csv_path",
+                "type": "str",
+            },
+            {
+                "default": None,
+                "description": "Restrict testing to these genes (list or comma-separated string); a focused gene "
+                "set makes the FDR correction much less punishing than a genome-wide scan",
+                "name": "candidate_genes",
+                "type": "list[str]",
+            },
+            {
+                "default": False,
+                "description": "Test only genes recorded in SynLethDB as synthetic-lethal partners of the driver; "
+                "intersects with candidate_genes when both are given",
+                "name": "restrict_to_synlethdb_partners",
+                "type": "bool",
+            },
+            {
+                "default": 25,
+                "description": "Number of top candidates to report in detail",
+                "name": "top_n",
+                "type": "int",
+            },
+            {
+                "default": 0.05,
+                "description": "One-sided Welch t-test p-value cutoff for 'mutant more depleted'",
+                "name": "p_threshold",
+                "type": "float",
+            },
+            {
+                "default": 0.25,
+                "description": "Benjamini-Hochberg q-value cutoff; set to 1.0 to disable FDR filtering",
+                "name": "fdr_threshold",
+                "type": "float",
+            },
+            {
+                "default": -0.2,
+                "description": "Required (mutant mean - wild-type mean) gene-effect difference; must be negative",
+                "name": "min_effect_difference",
+                "type": "float",
+            },
+            {
+                "default": -0.3,
+                "description": "The mutant group mean gene effect must be below this value to count as a real "
+                "dependency",
+                "name": "max_mutant_mean_effect",
+                "type": "float",
+            },
+            {
+                "default": True,
+                "description": "Drop common-essential genes depleted in more than 80% of all screened cell lines",
+                "name": "exclude_pan_essential",
+                "type": "bool",
+            },
+            {
+                "default": None,
+                "description": "Write the full ranked table of all tested genes to this CSV path",
+                "name": "output_csv_path",
+                "type": "str",
+            },
+            {
+                "default": None,
+                "description": "If given, writes '<prefix>_volcano.png' (all tested genes) and "
+                "'<prefix>_boxplot.png' (per-cell-line dependency of the top candidates in both groups)",
+                "name": "plot_output_prefix",
+                "type": "str",
+            },
+        ],
+        "required_parameters": [
+            {
+                "default": None,
+                "description": "HUGO symbol of the gene whose alteration defines the two groups, e.g. 'BRCA1' "
+                "or 'ARID1A' with stratify_by='mutation', 'CCNE1' with stratify_by='amplification'",
+                "name": "target_mutation",
+                "type": "str",
+            },
+        ],
+    },
+    {
+        "description": "Plot per-cell-line CRISPR dependency of target genes in altered vs control ovarian cancer "
+        "cell lines as box plots with every cell line overlaid as a point, so that a group difference driven by "
+        "one or two outlier lines is visible. Groups are built exactly as in "
+        "stratify_ovarian_cancer_dependency_by_mutation (mutation, amplification or deletion), and each panel is "
+        "annotated with the effect difference, one-sided Welch p and group sizes.",
+        "name": "plot_dependency_boxplot",
+        "optional_parameters": [
+            {
+                "default": None,
+                "description": "Ovarian histology filter, e.g. 'HGSOC', 'clear cell'. Default: all ovarian lines",
+                "name": "histology",
+                "type": "str",
+            },
+            {
+                "default": "mutation",
+                "description": "Genotype event that splits the cohort: 'mutation', 'amplification' or 'deletion'",
+                "name": "stratify_by",
+                "type": "str",
+            },
+            {
+                "default": None,
+                "description": "Directory holding the DepMap files (default: ./data/biomni_data/data_lake)",
+                "name": "data_lake_path",
+                "type": "str",
+            },
+            {
+                "default": None,
+                "description": "Optional genotype table overriding the default call source",
+                "name": "mutation_csv_path",
+                "type": "str",
+            },
+        ],
+        "required_parameters": [
+            {
+                "default": None,
+                "description": "HUGO symbol of the gene whose alteration defines the two groups, e.g. 'BRCA1'",
+                "name": "target_mutation",
+                "type": "str",
+            },
+            {
+                "default": None,
+                "description": "Target genes to plot (list or comma-separated string), e.g. the CANDIDATE_GENES "
+                "line of a discovery run",
+                "name": "genes",
+                "type": "list[str]",
+            },
+            {
+                "default": None,
+                "description": "Path of the PNG file to write",
+                "name": "output_path",
+                "type": "str",
+            },
+        ],
+    },
+    {
+        "description": "Draw a volcano plot of a differential dependency table: x is the effect difference "
+        "(altered mean - control mean gene effect, negative = the altered group is more dependent) and y is "
+        "-log10 of the one-sided p-value. FDR-significant genes are highlighted and labelled, nominally "
+        "significant genes get a second colour, pan-essential genes are marked separately so a common-essential "
+        "gene is not mistaken for a selective vulnerability, and known SynLethDB partners are ringed.",
+        "name": "plot_dependency_volcano",
+        "optional_parameters": [
+            {
+                "default": None,
+                "description": "Figure title (defaults to the CSV file name)",
+                "name": "title",
+                "type": "str",
+            },
+            {
+                "default": 0.05,
+                "description": "One-sided p-value cutoff used to colour the points; pass the value used in the "
+                "analysis run",
+                "name": "p_threshold",
+                "type": "float",
+            },
+            {
+                "default": 0.25,
+                "description": "Benjamini-Hochberg q-value cutoff used to colour the points",
+                "name": "fdr_threshold",
+                "type": "float",
+            },
+            {
+                "default": -0.2,
+                "description": "Effect-difference cutoff drawn as a vertical guide and used for colouring",
+                "name": "min_effect_difference",
+                "type": "float",
+            },
+            {
+                "default": True,
+                "description": "Treat pan-essential genes as a separate marked category rather than as hits",
+                "name": "exclude_pan_essential",
+                "type": "bool",
+            },
+            {
+                "default": 15,
+                "description": "Number of gene labels to draw, taken from the strongest effect differences",
+                "name": "label_top",
+                "type": "int",
+            },
+        ],
+        "required_parameters": [
+            {
+                "default": None,
+                "description": "CSV written by stratify_ovarian_cancer_dependency_by_mutation(output_csv_path=...), "
+                "or any table with gene, effect_difference and p_one_sided columns",
+                "name": "results_csv_path",
+                "type": "str",
+            },
+            {
+                "default": None,
+                "description": "Path of the PNG file to write",
+                "name": "output_path",
+                "type": "str",
+            },
+        ],
+    },
 ]
