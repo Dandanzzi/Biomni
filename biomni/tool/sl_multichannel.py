@@ -272,11 +272,38 @@ def _rank_normalise(values):
     series = pd.Series(values)
     return (series.rank(method="average") / len(series)).to_numpy()
 
+_SYNLETHDB_CACHE: dict = {}
 
+def load_known_sl_partners(driver_genes, data_lake_path=None, min_score=0.0):
+    """SynLethDB에서 driver의 알려진 합성치사 파트너를 가져온다. 없으면 None."""
+    import pandas as pd
+    import os
+
+    # 사용자 홈 디렉토리(~)를 기준으로 절대 경로를 자동 생성합니다.
+    path = os.path.expanduser("~/biomni/data/biomni_data/data_lake/synlethdb_human_sl.parquet")
+    
+    if "fixed_path" not in _SYNLETHDB_CACHE:
+        if not os.path.exists(path):
+            print(f"\n[경로 에러] 다음 위치에 파일이 없습니다: {path}\n")
+            _SYNLETHDB_CACHE["fixed_path"] = None
+        else:
+            _SYNLETHDB_CACHE["fixed_path"] = pd.read_parquet(path)
+            
+    table = _SYNLETHDB_CACHE["fixed_path"]
+    if table is None:
+        return None
+
+    drivers = {g.upper() for g in driver_genes}
+    hit = table[table.gene_a.isin(drivers) | table.gene_b.isin(drivers)]
+    if min_score:
+        hit = hit[hit.score >= min_score]
+    partners = set(hit.gene_a) | set(hit.gene_b)
+    return sorted(partners - drivers)
+    
 def discover_sl_multichannel(
     driver_genes,
     cancer_type: str = "pan-cancer",
-    known_sl_partners=None,
+    known_sl_partners: list | None = None,  # 원래대로 복구
     lof_only: bool = True,
     top_k: int = 30,
     require_channels: int = 3,
@@ -331,6 +358,8 @@ def discover_sl_multichannel(
     if not genes:
         return "FAILURE: no driver genes supplied."
     known_sl_partners = [g.upper() for g in _parse_gene_list(known_sl_partners or [])]
+    if not known_sl_partners:
+        known_sl_partners = load_known_sl_partners(genes, data_lake_path) or []
 
     try:
         bundle = _load_depmap(data_lake_path)
