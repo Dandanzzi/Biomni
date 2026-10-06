@@ -861,6 +861,8 @@ def read_module2api():
         "pharmacology",
         "physiology",
         "organoid_sl",
+        "pdac_translation",
+        "sl_multichannel",
         "synthetic_biology",
         "synthetic_lethality",
         "systems_biology",

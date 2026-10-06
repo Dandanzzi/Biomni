@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDAC Vulnerability Dossier</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Serif:ital,wght@0,400;0,600;1,400&display=swap">
+<style>
+:root{
+  color-scheme: light;
+  --page:#f4f6f5; --surface:#fcfdfc; --surface-2:#eef1f0;
+  --ink:#0e1211; --ink-2:#4c5553; --muted:#828b88;
+  --rule:#dde2e0; --grid:#e6eae8; --axis:#c3c9c6;
+  --accent:#1c5cab; --series-1:#2a78d6; --series-2:#eb6834;
+  --good:#0ca30c; --warn:#fab219; --crit:#d03b3b;
+  --shadow:0 1px 2px rgba(14,18,17,.05), 0 8px 24px -16px rgba(14,18,17,.25);
+  --sans:"IBM Plex Sans Condensed", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --serif:"IBM Plex Serif", Georgia, "Times New Roman", serif;
+  --mono:"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:where(:not([data-theme="light"])){
+    color-scheme: dark;
+    --page:#0e100f; --surface:#1a1a19; --surface-2:#222423;
+    --ink:#ffffff; --ink-2:#c3c2b7; --muted:#898781;
+    --rule:#2c2e2c; --grid:#2c2c2a; --axis:#383835;
+    --accent:#6da7ec; --series-1:#3987e5; --series-2:#d95926;
+    --good:#0ca30c; --warn:#fab219; --crit:#d03b3b;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.8);
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --page:#0e100f; --surface:#1a1a19; --surface-2:#222423;
+  --ink:#ffffff; --ink-2:#c3c2b7; --muted:#898781;
+  --rule:#2c2e2c; --grid:#2c2c2a; --axis:#383835;
+  --accent:#6da7ec; --series-1:#3987e5; --series-2:#d95926;
+  --good:#0ca30c; --warn:#fab219; --crit:#d03b3b;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.8);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--page);color:var(--ink);font-family:var(--serif);
+  font-size:16px;line-height:1.62;-webkit-font-smoothing:antialiased}
+a{color:var(--accent);text-underline-offset:2px}
+a:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:2px}
+.wrap{max-width:1080px;margin:0 auto;padding:0 28px 96px}
+header.masthead{border-bottom:1px solid var(--rule);padding:56px 0 28px;margin-bottom:8px}
+.eyebrow{font-family:var(--sans);font-size:12px;font-weight:600;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--muted)}
+h1{font-family:var(--sans);font-weight:700;font-size:clamp(30px,4.4vw,46px);line-height:1.08;
+  letter-spacing:-.015em;margin:14px 0 10px;text-wrap:balance;max-width:20ch}
+.question{font-family:var(--serif);font-style:italic;color:var(--ink-2);max-width:62ch;margin:0 0 20px}
+.runmeta{font-family:var(--mono);font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:6px 18px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin:28px 0 12px}
+.tile{background:var(--surface);border:1px solid var(--rule);border-radius:3px;padding:14px 16px;box-shadow:var(--shadow)}
+.tile .k{font-family:var(--sans);font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.tile .v{font-family:var(--sans);font-size:30px;font-weight:700;line-height:1.1;margin-top:6px;letter-spacing:-.02em}
+.tile .n{font-family:var(--mono);font-size:11.5px;color:var(--ink-2);margin-top:4px;line-height:1.45}
+main{display:grid;grid-template-columns:72px minmax(0,1fr);gap:0 28px}
+section.stage{grid-column:1 / -1;display:grid;grid-template-columns:subgrid;padding:40px 0 8px;border-top:1px solid var(--rule)}
+section.stage:first-of-type{border-top:none}
+.rail{font-family:var(--mono);font-size:12px;color:var(--muted);padding-top:6px}
+.rail .num{display:block;font-family:var(--sans);font-size:26px;font-weight:700;color:var(--axis);line-height:1}
+.rail .state{display:inline-block;margin-top:8px;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase}
+.rail .state.done{color:var(--good)} .rail .state.pending{color:var(--muted)}
+.body{min-width:0}
+h2{font-family:var(--sans);font-weight:600;font-size:23px;letter-spacing:-.01em;margin:0 0 6px;text-wrap:balance}
+.finding{margin:0 0 22px;max-width:66ch;color:var(--ink-2)}
+.finding strong{color:var(--ink);font-weight:600}
+figure{margin:0 0 18px;background:var(--surface);border:1px solid var(--rule);border-radius:3px;
+  padding:18px 18px 12px;box-shadow:var(--shadow)}
+figcaption{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-top:10px;line-height:1.5}
+.legend{display:flex;flex-wrap:wrap;gap:8px 16px;font-family:var(--sans);font-size:12px;
+  font-weight:500;color:var(--ink-2);margin-bottom:12px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+svg{display:block;width:100%;height:auto;overflow:visible}
+svg text{font-family:var(--mono);font-size:11px;fill:var(--ink-2)}
+svg text.lab{font-family:var(--sans);font-weight:600;font-size:12px;fill:var(--ink)}
+svg text.val{font-family:var(--mono);font-size:11px;fill:var(--ink-2)}
+svg .gridline{stroke:var(--grid);stroke-width:1}
+svg .axis{stroke:var(--axis);stroke-width:1}
+svg .hit{fill:transparent;cursor:crosshair}
+details{margin:0 0 18px;border:1px solid var(--rule);border-radius:3px;background:var(--surface)}
+summary{font-family:var(--sans);font-size:12.5px;font-weight:600;letter-spacing:.04em;
+  text-transform:uppercase;color:var(--ink-2);padding:11px 14px;cursor:pointer}
+.tablewrap{overflow-x:auto;padding:0 14px 14px}
+table{border-collapse:collapse;width:100%;font-family:var(--mono);font-size:12px;
+  font-variant-numeric:tabular-nums;white-space:nowrap}
+th{text-align:left;font-family:var(--sans);font-size:11px;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--muted);font-weight:600;padding:6px 12px 6px 0;border-bottom:1px solid var(--rule)}
+td{padding:5px 12px 5px 0;border-bottom:1px solid var(--grid);color:var(--ink-2)}
+td.gene{color:var(--ink);font-weight:500}
+.chip{display:inline-flex;align-items:center;gap:5px;font-family:var(--sans);font-size:11px;
+  font-weight:600;letter-spacing:.03em;padding:1px 7px;border-radius:2px;border:1px solid currentColor}
+.chip.good{color:var(--good)} .chip.warn{color:#9a6b00} .chip.crit{color:var(--crit)}
+:root[data-theme="dark"] .chip.warn,
+:root:where(:not([data-theme="light"])) .chip.warn{color:var(--warn)}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]) .chip.warn{color:#9a6b00}}
+.refs{list-style:none;padding:0;margin:0}
+.refs li{padding:11px 0;border-bottom:1px solid var(--grid);max-width:74ch}
+.refs .gene{font-family:var(--sans);font-weight:700;font-size:13px;letter-spacing:.04em}
+.refs .meta{font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+.refs .title{display:block;margin-top:2px}
+.none{font-family:var(--mono);font-size:12px;color:var(--muted)}
+.callout{border-left:3px solid var(--accent);background:var(--surface-2);padding:14px 16px;
+  margin:0 0 18px;border-radius:0 3px 3px 0}
+.callout p{margin:0;max-width:64ch;font-size:15px}
+.callout .h{font-family:var(--sans);font-size:11.5px;font-weight:700;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--accent);margin-bottom:5px}
+footer{border-top:1px solid var(--rule);margin-top:44px;padding-top:20px;font-family:var(--mono);
+  font-size:11.5px;color:var(--muted);line-height:1.7}
+#tip{position:fixed;z-index:20;pointer-events:none;opacity:0;transition:opacity .12s;
+  background:var(--ink);color:var(--page);font-family:var(--mono);font-size:11.5px;line-height:1.5;
+  padding:7px 9px;border-radius:3px;max-width:280px;box-shadow:var(--shadow)}
+@media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}}
+@media (max-width:720px){
+  main{grid-template-columns:1fr}
+  section.stage{display:block}
+  .rail{display:flex;gap:12px;align-items:baseline;padding-bottom:10px}
+  .rail .num{font-size:20px}
+}
+</style>
+
+<div id="tip" role="status" aria-live="polite"></div>
+<div class="wrap">
+  <header class="masthead">
+    <div class="eyebrow">Biomni &middot; translational pipeline run</div>
+    <h1>PDAC Vulnerability Dossier</h1>
+    <p class="question">췌장암의 유전적 취약성과 합성치사 관계를 발굴하고, 예측된 약물 효과를 환자유래 오가노이드에서 기능적으로 검증할 수 있는가?</p>
+    <div class="runmeta" id="runmeta"></div>
+    <div class="tiles" id="tiles"></div>
+  </header>
+  <main id="stages"></main>
+  <footer id="foot"></footer>
+</div>
+
+<script>
+const REPORT = {"generated_at": "2026-10-06 06:45 UTC", "disease": "Pancreatic cancer", "driver": "KRAS", "run_dir": "/data2/home/delee/biomni/pdac_run", "sections": ["driver_landscape", "predictions", "drugs", "literature"], "landscape": [{"driver": "CDKN2A", "alteration": "deletion", "n_altered": 23, "n_control": 13, "n_unprofiled": 11, "altered_fraction": 0.6388888888888888, "verdict": "TESTABLE", "note": "both arms are large enough for a genome-wide contrast", "min_arm": 13}, {"driver": "SMAD4", "alteration": "mutation", "n_altered": 11, "n_control": 33, "n_unprofiled": 3, "altered_fraction": 0.25, "verdict": "TESTABLE", "note": "both arms are large enough for a genome-wide contrast", "min_arm": 11}, {"driver": "MYC", "alteration": "amplification", "n_altered": 10, "n_control": 26, "n_unprofiled": 11, "altered_fraction": 0.2777777777777778, "verdict": "TESTABLE", "note": "both arms are large enough for a genome-wide contrast", "min_arm": 10}, {"driver": "SMAD4", "alteration": "deletion", "n_altered": 26, "n_control": 10, "n_unprofiled": 11, "altered_fraction": 0.7222222222222222, "verdict": "TESTABLE", "note": "both arms are large enough for a genome-wide contrast", "min_arm": 10}, {"driver": "CDKN2A", "alteration": "mutation", "n_altered": 10, "n_control": 34, "n_unprofiled": 3, "altered_fraction": 0.2272727272727272, "verdict": "TESTABLE", "note": "both arms are large enough for a genome-wide contrast", "min_arm": 10}, {"driver": "ARID1A", "alteration": "mutation", "n_altered": 10, "n_control": 34, "n_unprofiled": 3, "altered_fraction": 0.2272727272727272, "verdict": "TESTABLE", "note": "both arms are large enough for a genome-wide contrast", "min_arm": 10}, {"driver": "TP53", "alteration": "mutation", "n_altered": 36, "n_control": 8, "n_unprofiled": 3, "altered_fraction": 0.8181818181818182, "verdict": "TESTABLE", "note": "both arms are large enough for a genome-wide contrast", "min_arm": 8}, {"driver": "RNF43", "alteration": "mutation", "n_altered": 7, "n_control": 37, "n_unprofiled": 3, "altered_fraction": 0.1590909090909091, "verdict": "UNDERPOWERED", "note": "both arms exist but the smaller is <8 lines; expect no gene to clear a genome-wide FDR", "min_arm": 7}, {"driver": "KMT2C", "alteration": "mutation", "n_altered": 7, "n_control": 37, "n_unprofiled": 3, "altered_fraction": 0.1590909090909091, "verdict": "UNDERPOWERED", "note": "both arms exist but the smaller is <8 lines; expect no gene to clear a genome-wide FDR", "min_arm": 7}, {"driver": "ATM", "alteration": "mutation", "n_altered": 5, "n_control": 39, "n_unprofiled": 3, "altered_fraction": 0.1136363636363636, "verdict": "UNDERPOWERED", "note": "both arms exist but the smaller is <8 lines; expect no gene to clear a genome-wide FDR", "min_arm": 5}, {"driver": "TP53", "alteration": "deletion", "n_altered": 5, "n_control": 31, "n_unprofiled": 11, "altered_fraction": 0.1388888888888889, "verdict": "UNDERPOWERED", "note": "both arms exist but the smaller is <8 lines; expect no gene to clear a genome-wide FDR", "min_arm": 5}, {"driver": "KRAS", "alteration": "mutation", "n_altered": 40, "n_control": 4, "n_unprofiled": 3, "altered_fraction": 0.9090909090909092, "verdict": "UNDERPOWERED", "note": "both arms exist but the smaller is <8 lines; expect no gene to clear a genome-wide FDR", "min_arm": 4}, {"driver": "GATA6", "alteration": "amplification", "n_altered": 4, "n_control": 32, "n_unprofiled": 11, "altered_fraction": 0.1111111111111111, "verdict": "UNDERPOWERED", "note": "both arms exist but the smaller is <8 lines; expect no gene to clear a genome-wide FDR", "min_arm": 4}, {"driver": "ERBB2", "alteration": "amplification", "n_altered": 4, "n_control": 32, "n_unprofiled": 11, "altered_fraction": 0.1111111111111111, "verdict": "UNDERPOWERED", "note": "both arms exist but the smaller is <8 lines; expect no gene to clear a genome-wide FDR", "min_arm": 4}, {"driver": "KMT2D", "alteration": "mutation", "n_altered": 3, "n_control": 41, "n_unprofiled": 3, "altered_fraction": 0.0681818181818181, "verdict": "UNDERPOWERED", "note": "both arms exist but the smaller is <8 lines; expect no gene to clear a genome-wide FDR", "min_arm": 3}, {"driver": "AKT2", "alteration": "amplification", "n_altered": 3, "n_control": 33, "n_unprofiled": 11, "altered_fraction": 0.0833333333333333, "verdict": "UNDERPOWERED", "note": "both arms exist but the smaller is <8 lines; expect no gene to clear a genome-wide FDR", "min_arm": 3}, {"driver": "BRCA2", "alteration": "mutation", "n_altered": 2, "n_control": 42, "n_unprofiled": 3, "altered_fraction": 0.0454545454545454, "verdict": "UNTESTABLE", "note": "one arm has <3 lines - a within-PDAC contrast is impossible; use a pan-cancer cohort or an isogenic model instead", "min_arm": 2}, {"driver": "PALB2", "alteration": "mutation", "n_altered": 2, "n_control": 42, "n_unprofiled": 3, "altered_fraction": 0.0454545454545454, "verdict": "UNTESTABLE", "note": "one arm has <3 lines - a within-PDAC contrast is impossible; use a pan-cancer cohort or an isogenic model instead", "min_arm": 2}, {"driver": "CCNE1", "alteration": "amplification", "n_altered": 2, "n_control": 34, "n_unprofiled": 11, "altered_fraction": 0.0555555555555555, "verdict": "UNTESTABLE", "note": "one arm has <3 lines - a within-PDAC contrast is impossible; use a pan-cancer cohort or an isogenic model instead", "min_arm": 2}, {"driver": "GNAS", "alteration": "mutation", "n_altered": 1, "n_control": 43, "n_unprofiled": 3, "altered_fraction": 0.0227272727272727, "verdict": "UNTESTABLE", "note": "one arm has <3 lines - a within-PDAC contrast is impossible; use a pan-cancer cohort or an isogenic model instead", "min_arm": 1}, {"driver": "TGFBR2", "alteration": "mutation", "n_altered": 1, "n_control": 43, "n_unprofiled": 3, "altered_fraction": 0.0227272727272727, "verdict": "UNTESTABLE", "note": "one arm has <3 lines - a within-PDAC contrast is impossible; use a pan-cancer cohort or an isogenic model instead", "min_arm": 1}, {"driver": "BRCA1", "alteration": "mutation", "n_altered": 1, "n_control": 43, "n_unprofiled": 3, "altered_fraction": 0.0227272727272727, "verdict": "UNTESTABLE", "note": "one arm has <3 lines - a within-PDAC contrast is impossible; use a pan-cancer cohort or an isogenic model instead", "min_arm": 1}, {"driver": "STK11", "alteration": "mutation", "n_altered": 1, "n_control": 43, "n_unprofiled": 3, "altered_fraction": 0.0227272727272727, "verdict": "UNTESTABLE", "note": "one arm has <3 lines - a within-PDAC contrast is impossible; use a pan-cancer cohort or an isogenic model instead", "min_arm": 1}, {"driver": "RBM10", "alteration": "mutation", "n_altered": 1, "n_control": 43, "n_unprofiled": 3, "altered_fraction": 0.0227272727272727, "verdict": "UNTESTABLE", "note": "one arm has <3 lines - a within-PDAC contrast is impossible; use a pan-cancer cohort or an isogenic model instead", "min_arm": 1}, {"driver": "ACVR1B", "alteration": "mutation", "n_altered": 0, "n_control": 44, "n_unprofiled": 3, "altered_fraction": 0.0, "verdict": "UNTESTABLE", "note": "one arm has <3 lines - a within-PDAC contrast is impossible; use a pan-cancer cohort or an isogenic model instead", "min_arm": 0}, {"driver": "KDM6A", "alteration": "mutation", "n_altered": 0, "n_control": 44, "n_unprofiled": 3, "altered_fraction": 0.0, "verdict": "UNTESTABLE", "note": "one arm has <3 lines - a within-PDAC contrast is impossible; use a pan-cancer cohort or an isogenic model instead", "min_arm": 0}], "predictions": [{"rank": 1, "gene": "ADAR", "mutant_mean_effect": -0.6902936044607637, "wildtype_mean_effect": -0.1939190823128156, "effect_difference": -0.496374522147948, "cohens_d": -1.4881288117602596, "t_statistic": -4.84623377797246, "p_value": 0.0006125475548811, "q_value": 0.1224200377378753, "pct_mutant_dependent": 60.0, "pct_wildtype_dependent": 0.0, "pct_all_lines_dependent": 51.39475908706677, "pan_essential": false}, {"rank": 2, "gene": "VPS4A", "mutant_mean_effect": -0.6611858935739772, "wildtype_mean_effect": -0.1787673627220724, "effect_difference": -0.4824185308519046, "cohens_d": -1.4242777934370692, "t_statistic": -5.7028420297186, "p_value": 2.7217126686672285e-06, "q_value": 0.0053790114708426, "pct_mutant_dependent": 52.5, "pct_wildtype_dependent": 0.0, "pct_all_lines_dependent": 19.611158072696533, "pan_essential": false}, {"rank": 3, "gene": "DHFR", "mutant_mean_effect": -0.9595865870670311, "wildtype_mean_effect": -0.5301017352922924, "effect_difference": -0.4294848517747388, "cohens_d": -1.2575215929781816, "t_statistic": -4.758107008214012, "p_value": 3.622989850133908e-05, "q_value": 0.0292918729383326, "pct_mutant_dependent": 81.25, "pct_wildtype_dependent": 50.0, "pct_all_lines_dependent": 71.99248120300751, "pan_essential": false}, {"rank": 4, "gene": "ARF4", "mutant_mean_effect": -0.8164485939040367, "wildtype_mean_effect": -0.4180326660687142, "effect_difference": -0.3984159278353225, "cohens_d": -0.9956991716481014, "t_statistic": -3.588447907411437, "p_value": 0.0023329256561937, "q_value": 0.2431103256459143, "pct_mutant_dependent": 67.5, "pct_wildtype_dependent": 25.0, "pct_all_lines_dependent": 62.890955198647504, "pan_essential": false}, {"rank": 5, "gene": "NDE1", "mutant_mean_effect": -0.6487177482604916, "wildtype_mean_effect": -0.3082022393995436, "effect_difference": -0.3405155088609479, "cohens_d": -1.2118928071923911, "t_statistic": -4.651378060082634, "p_value": 9.925765249113036e-05, "q_value": 0.0466495590807144, "pct_mutant_dependent": 62.5, "pct_wildtype_dependent": 0.0, "pct_all_lines_dependent": 29.75486052409129, "pan_essential": false}, {"rank": 6, "gene": "SREBF1", "mutant_mean_effect": -0.5465746632734815, "wildtype_mean_effect": -0.2150688578603551, "effect_difference": -0.3315058054131263, "cohens_d": -1.268382415414434, "t_statistic": -4.956409618845361, "p_value": 3.404798465791062e-05, "q_value": 0.0288386430052502, "pct_mutant_dependent": 42.5, "pct_wildtype_dependent": 0.0, "pct_all_lines_dependent": 21.301775147929, "pan_essential": false}, {"rank": 7, "gene": "TEAD1", "mutant_mean_effect": -0.3281848306152993, "wildtype_mean_effect": -0.0627375269304651, "effect_difference": -0.2654473036848341, "cohens_d": -1.2614149326358, "t_statistic": -5.171297782166168, "p_value": 8.94429344494866e-06, "q_value": 0.0122378575004078, "pct_mutant_dependent": 32.5, "pct_wildtype_dependent": 0.0, "pct_all_lines_dependent": 16.56804733727811, "pan_essential": false}, {"rank": 8, "gene": "FADD", "mutant_mean_effect": -0.3658987368069397, "wildtype_mean_effect": -0.1198194461889017, "effect_difference": -0.2460792906180379, "cohens_d": -1.1342502721557304, "t_statistic": -4.314658029174226, "p_value": 0.0002602370842148, "q_value": 0.0789519428992609, "pct_mutant_dependent": 20.0, "pct_wildtype_dependent": 0.0, "pct_all_lines_dependent": 11.58072696534235, "pan_essential": false}, {"rank": 9, "gene": "CHKA", "mutant_mean_effect": -0.3995214390697726, "wildtype_mean_effect": -0.1612737426552012, "effect_difference": -0.2382476964145714, "cohens_d": -1.6800520486114028, "t_statistic": -6.503383857058467, "p_value": 7.481439007232381e-07, "q_value": 0.0026614471124328, "pct_mutant_dependent": 20.0, "pct_wildtype_dependent": 0.0, "pct_all_lines_dependent": 18.25866441251057, "pan_essential": false}], "n_predictions": 9, "drugs": [{"gene": "ADAR", "drug": NaN, "clinical_phase": NaN, "moa": NaN, "inhibitory": false, "verdict": "CRISPR-ONLY", "synlethdb": "SynLethDB partner of KRAS (High Throughput)"}, {"gene": "VPS4A", "drug": NaN, "clinical_phase": NaN, "moa": NaN, "inhibitory": false, "verdict": "CRISPR-ONLY", "synlethdb": NaN}, {"gene": "DHFR", "drug": "chlorproguanil", "clinical_phase": "Launched", "moa": "dihydrofolate reductase inhibitor", "inhibitory": true, "verdict": "CLINICAL-STAGE INHIBITOR", "synlethdb": "SynLethDB partner of KRAS (High Throughput)"}, {"gene": "DHFR", "drug": "methotrexate", "clinical_phase": "Launched", "moa": "dihydrofolate reductase inhibitor", "inhibitory": true, "verdict": "CLINICAL-STAGE INHIBITOR", "synlethdb": "SynLethDB partner of KRAS (High Throughput)"}, {"gene": "DHFR", "drug": "pemetrexed", "clinical_phase": "Launched", "moa": "dihydrofolate reductase inhibitor|thymidylate synthase inhibitor", "inhibitory": true, "verdict": "CLINICAL-STAGE INHIBITOR", "synlethdb": "SynLethDB partner of KRAS (High Throughput)"}, {"gene": "DHFR", "drug": "pralatrexate", "clinical_phase": "Launched", "moa": "dihydrofolate reductase inhibitor", "inhibitory": true, "verdict": "CLINICAL-STAGE INHIBITOR", "synlethdb": "SynLethDB partner of KRAS (High Throughput)"}, {"gene": "ARF4", "drug": NaN, "clinical_phase": NaN, "moa": NaN, "inhibitory": false, "verdict": "CRISPR-ONLY", "synlethdb": "SynLethDB partner of KRAS (GenomeRNAi)"}, {"gene": "NDE1", "drug": NaN, "clinical_phase": NaN, "moa": NaN, "inhibitory": false, "verdict": "CRISPR-ONLY", "synlethdb": "SynLethDB partner of KRAS (Text Mining)"}, {"gene": "SREBF1", "drug": NaN, "clinical_phase": NaN, "moa": NaN, "inhibitory": false, "verdict": "CRISPR-ONLY", "synlethdb": NaN}, {"gene": "TEAD1", "drug": NaN, "clinical_phase": NaN, "moa": NaN, "inhibitory": false, "verdict": "CRISPR-ONLY", "synlethdb": "SynLethDB partner of KRAS (GenomeRNAi)"}, {"gene": "FADD", "drug": NaN, "clinical_phase": NaN, "moa": NaN, "inhibitory": false, "verdict": "CRISPR-ONLY", "synlethdb": NaN}, {"gene": "CHKA", "drug": NaN, "clinical_phase": NaN, "moa": NaN, "inhibitory": false, "verdict": "CRISPR-ONLY", "synlethdb": NaN}], "literature": {"ADAR": {"score": 28, "interpretation": "WEAK - mentioned in the literature without specific support for this interaction.", "n_papers": 2, "n_pair_papers": 2, "refuting_pmids": [], "query": "[disease-context] 0 hit(s); [gene-pair] 2 hit(s)", "papers": [{"pmid": "29967493", "title": "Efficient and precise editing of endogenous transcripts with SNAP-tagged ADARs.", "journal": "Nature methods", "year": 2018, "pair": true}, {"pmid": "35086391", "title": "Genetic screening of early-onset patients with systemic lupus erythematosus by a targeted next-generation sequencing gene panel.", "journal": "Lupus", "year": 2022, "pair": true}]}, "VPS4A": {"score": 4, "interpretation": "CONTESTED-SPARSE - little supporting literature and at least one negative/non-replication statement; verify the flagged PMIDs before spending experimental effort.", "n_papers": 2, "n_pair_papers": 0, "refuting_pmids": ["27909058"], "query": "[disease-context] 0 hit(s); [gene-pair] 2 hit(s)", "papers": [{"pmid": "22231449", "title": "CHMP6 and VPS4A mediate the recycling of Ras to the plasma membrane to promote growth factor signaling.", "journal": "Oncogene", "year": 2012, "pair": false}, {"pmid": "27909058", "title": "Secreted Glioblastoma Nanovesicles Contain Intracellular Signaling Proteins and Active Ras Incorporated in a Farnesylation-dependent Manner.", "journal": "The Journal of biological chemistry", "year": 2016, "pair": false}]}, "DHFR": {"score": 71, "interpretation": "WELL SUPPORTED - repeatedly reported, including direct experimental evidence.", "n_papers": 6, "n_pair_papers": 3, "refuting_pmids": [], "query": "[disease-context] 1 hit(s); [gene-pair] 6 hit(s)", "papers": [{"pmid": "41754871", "title": "Novel Active Homo-Aza (Lactam) Steroidal Antimetabolites for the Treatment of Human Pancreatic and Colorectal Cancer.", "journal": "Pharmaceuticals (Basel, Switzerland)", "year": 2026, "pair": true}, {"pmid": "41257006", "title": "Broadening Degrader Therapeutics: Keap1 PROTACs, Antimalarial Hybrids, and PLK1 Inhibition of NLRP3 Inflammasomes.", "journal": "ACS medicinal chemistry letters", "year": 2025, "pair": true}, {"pmid": "23026135", "title": "Geminin functions downstream of p53 in K-ras-induced gene amplification of dihydrofolate reductase.", "journal": "Cancer research", "year": 2012, "pair": false}, {"pmid": "38540202", "title": "Hypermethylated Colorectal Cancer Tumours Present a Myc-Driven Hypermetabolism with a One-Carbon Signature Associated with Worsen Prognosis.", "journal": "Biomedicines", "year": 2024, "pair": true}, {"pmid": "39338298", "title": "Anticancer Activity of Imidazolyl Gold(I/III) Compounds in Non-Small Cell Lung Cancer Cell Lines.", "journal": "Pharmaceuticals (Basel, Switzerland)", "year": 2024, "pair": false}, {"pmid": "18187583", "title": "Molecular mechanisms underlying the synergistic interaction of erlotinib, an epidermal growth factor receptor tyrosine kinase inhibitor, with the multitargeted antifolate pemetrexed in non-small-cell lung cancer cells.", "journal": "Molecular pharmacology", "year": 2008, "pair": false}]}, "ARF4": {"score": 0, "interpretation": "UNEXPLORED - no PubMed record links this pair; novel but entirely unvalidated.", "n_papers": 0, "n_pair_papers": 0, "refuting_pmids": [], "query": "[disease-context] 0 hit(s); [gene-pair] 0 hit(s)", "papers": []}, "NDE1": {"score": 15, "interpretation": "WEAK - mentioned in the literature without specific support for this interaction.", "n_papers": 1, "n_pair_papers": 1, "refuting_pmids": [], "query": "[disease-context] 0 hit(s); [gene-pair] 1 hit(s)", "papers": [{"pmid": "39353669", "title": "Rare presentation and unconventional treatment of Rosai-Dorfman disease.", "journal": "BMJ case reports", "year": 2024, "pair": true}]}, "SREBF1": {"score": 41, "interpretation": "EMERGING - some supporting reports, but sparse or indirect.", "n_papers": 2, "n_pair_papers": 2, "refuting_pmids": [], "query": "[disease-context] 0 hit(s); [gene-pair] 2 hit(s)", "papers": [{"pmid": "38758860", "title": "Identification and characterization of ferroptosis-related genes in therapy-resistant gastric cancer.", "journal": "Medicine", "year": 2024, "pair": true}, {"pmid": "30452622", "title": "ErbB4 acts as a suppressor in colitis and its associated carcinoma by negatively regulating cholesterol metabolism.", "journal": "Carcinogenesis", "year": 2019, "pair": true}]}, "TEAD1": {"score": 75, "interpretation": "WELL SUPPORTED - repeatedly reported, including direct experimental evidence.", "n_papers": 6, "n_pair_papers": 6, "refuting_pmids": [], "query": "[disease-context] 2 hit(s); [gene-pair] 6 hit(s)", "papers": [{"pmid": "33077732", "title": "Detection of early stage pancreatic cancer using 5-hydroxymethylcytosine signatures in circulating cell free DNA.", "journal": "Nature communications", "year": 2020, "pair": true}, {"pmid": "33664869", "title": "The short isoform of PRLR suppresses the pentose phosphate pathway and nucleotide synthesis through the NEK9-Hippo axis in pancreatic cancer.", "journal": "Theranostics", "year": 2021, "pair": true}, {"pmid": "38607003", "title": "Hippo Signaling at the Hallmarks of Cancer and Drug Resistance.", "journal": "Cells", "year": 2024, "pair": true}, {"pmid": "40923514", "title": "Fusion-Negative Rhabdomyosarcoma: Clinical Application of Targeted RNA Sequencing.", "journal": "Pediatric and developmental pathology : the official journal of the Society for Pediatric Pathology and the Paediatric Pathology Society", "year": 2025, "pair": true}, {"pmid": "37111311", "title": "TEAD Inhibitors Sensitize KRASG12C Inhibitors via Dual Cell Cycle Arrest in KRASG12C-Mutant NSCLC.", "journal": "Pharmaceuticals (Basel, Switzerland)", "year": 2023, "pair": true}, {"pmid": "33569513", "title": "The Hippo Tumor Suppressor Pathway (YAP/TAZ/TEAD/MST/LATS) and EGFR-RAS-RAF-MEK in cancer metastasis.", "journal": "Genes & diseases", "year": 2019, "pair": true}]}, "FADD": {"score": 75, "interpretation": "WELL SUPPORTED - repeatedly reported, including direct experimental evidence.", "n_papers": 6, "n_pair_papers": 5, "refuting_pmids": [], "query": "[disease-context] 1 hit(s); [gene-pair] 6 hit(s)", "papers": [{"pmid": "34515878", "title": "A comprehensive analysis of different gene classes in pancreatic cancer: SIGLEC15 may be a promising immunotherapeutic target.", "journal": "Investigational new drugs", "year": 2021, "pair": true}, {"pmid": "37055935", "title": "Copper metabolism in cell death and autophagy.", "journal": "Autophagy", "year": 2023, "pair": true}, {"pmid": "38901726", "title": "Emamectin benzoate-induced toxicity affects intestinal epithelial integrity involving apoptosis.", "journal": "Food and chemical toxicology : an international journal published for the British Industrial Biological Research Association", "year": 2024, "pair": true}, {"pmid": "25628462", "title": "Phosphorylation of FADD by the kinase CK1\u03b1 promotes KRASG12D-induced lung cancer.", "journal": "Science signaling", "year": 2015, "pair": true}, {"pmid": "30203445", "title": "Neratinib augments the lethality of [regorafenib\u2009+\u2009sildenafil].", "journal": "Journal of cellular physiology", "year": 2018, "pair": false}, {"pmid": "37146968", "title": "The adapter protein FADD provides an alternate pathway for entry into the cell cycle by regulating APC/C-Cdh1 E3 ubiquitin ligase activity.", "journal": "The Journal of biological chemistry", "year": 2023, "pair": true}]}, "CHKA": {"score": 17, "interpretation": "WEAK - mentioned in the literature without specific support for this interaction.", "n_papers": 1, "n_pair_papers": 1, "refuting_pmids": [], "query": "[disease-context] 0 hit(s); [gene-pair] 1 hit(s)", "papers": [{"pmid": "27563447", "title": "A genetic database can be utilized to identify potential biomarkers for biphenotypic hepatocellular carcinoma-cholangiocarcinoma.", "journal": "Journal of gastrointestinal oncology", "year": 2016, "pair": true}]}}};
+
+/* ---------- small helpers ---------- */
+const NS = "http://www.w3.org/2000/svg";
+const tip = document.getElementById("tip");
+const fmt = (v, d = 2) => (v === null || v === undefined || Number.isNaN(Number(v))) ? "n/a" : Number(v).toFixed(d);
+const sci = v => (v === null || v === undefined || v === "" || Number.isNaN(Number(v))) ? "n/a"
+  : (Math.abs(Number(v)) < 0.001 ? Number(v).toExponential(1) : Number(v).toFixed(3));
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+function svgEl(tag, attrs) {
+  const node = document.createElementNS(NS, tag);
+  for (const [key, value] of Object.entries(attrs || {})) node.setAttribute(key, value);
+  return node;
+}
+function hover(node, html) {
+  node.addEventListener("pointermove", event => {
+    tip.innerHTML = html;
+    tip.style.opacity = 1;
+    const box = tip.getBoundingClientRect();
+    let x = event.clientX + 14, y = event.clientY + 14;
+    if (x + box.width > window.innerWidth - 8) x = event.clientX - box.width - 14;
+    if (y + box.height > window.innerHeight - 8) y = event.clientY - box.height - 14;
+    tip.style.left = x + "px"; tip.style.top = y + "px";
+  });
+  node.addEventListener("pointerleave", () => { tip.style.opacity = 0; });
+}
+
+/* ---------- chart: horizontal bars ---------- */
+function barChart(rows, options) {
+  const opt = Object.assign({ width: 760, rowHeight: 26, labelWidth: 108, valueWidth: 118, max: null }, options);
+  const plotWidth = opt.width - opt.labelWidth - opt.valueWidth;
+  const height = rows.length * opt.rowHeight + 26;
+  const svg = svgEl("svg", { viewBox: `0 0 ${opt.width} ${height}`, role: "img" });
+  const max = opt.max || Math.max(...rows.map(r => r.value), 1);
+  const ticks = 4;
+  for (let i = 0; i <= ticks; i++) {
+    const x = opt.labelWidth + (plotWidth * i) / ticks;
+    svg.appendChild(svgEl("line", { class: "gridline", x1: x, y1: 0, x2: x, y2: rows.length * opt.rowHeight }));
+    const label = svgEl("text", { x: x, y: height - 8, "text-anchor": i === 0 ? "start" : "middle" });
+    label.textContent = opt.tickFormat ? opt.tickFormat(max * i / ticks) : (max * i / ticks).toFixed(opt.tickDigits ?? 0);
+    svg.appendChild(label);
+  }
+  svg.appendChild(svgEl("line", { class: "axis", x1: opt.labelWidth, y1: 0, x2: opt.labelWidth, y2: rows.length * opt.rowHeight }));
+  rows.forEach((row, index) => {
+    const y = index * opt.rowHeight;
+    const barHeight = 13;
+    const width = Math.max(2, (row.value / max) * plotWidth);
+    const name = svgEl("text", { class: "lab", x: opt.labelWidth - 10, y: y + barHeight + 1, "text-anchor": "end" });
+    name.textContent = row.label;
+    svg.appendChild(name);
+    svg.appendChild(svgEl("rect", {
+      x: opt.labelWidth, y: y + 4, width: width, height: barHeight, rx: 3, fill: row.color || "var(--series-1)"
+    }));
+    const value = svgEl("text", { class: "val", x: opt.labelWidth + width + 8, y: y + barHeight + 1 });
+    value.textContent = row.valueLabel;
+    svg.appendChild(value);
+    const hit = svgEl("rect", { class: "hit", x: 0, y: y, width: opt.width, height: opt.rowHeight });
+    hover(hit, row.tip);
+    svg.appendChild(hit);
+  });
+  return svg;
+}
+
+/* ---------- chart: paired dots (selectivity) ---------- */
+function dumbbell(rows, options) {
+  const opt = Object.assign({ width: 760, rowHeight: 26, labelWidth: 108 }, options);
+  const plotWidth = opt.width - opt.labelWidth - 46;
+  const height = rows.length * opt.rowHeight + 26;
+  const svg = svgEl("svg", { viewBox: `0 0 ${opt.width} ${height}`, role: "img" });
+  for (let i = 0; i <= 4; i++) {
+    const x = opt.labelWidth + (plotWidth * i) / 4;
+    svg.appendChild(svgEl("line", { class: "gridline", x1: x, y1: 0, x2: x, y2: rows.length * opt.rowHeight }));
+    const label = svgEl("text", { x: x, y: height - 8, "text-anchor": i === 0 ? "start" : "middle" });
+    label.textContent = (i * 25) + "%";
+    svg.appendChild(label);
+  }
+  svg.appendChild(svgEl("line", { class: "axis", x1: opt.labelWidth, y1: 0, x2: opt.labelWidth, y2: rows.length * opt.rowHeight }));
+  rows.forEach((row, index) => {
+    const y = index * opt.rowHeight + 11;
+    const xa = opt.labelWidth + (row.a / 100) * plotWidth;
+    const xb = opt.labelWidth + (row.b / 100) * plotWidth;
+    const name = svgEl("text", { class: "lab", x: opt.labelWidth - 10, y: y + 4, "text-anchor": "end" });
+    name.textContent = row.label;
+    svg.appendChild(name);
+    svg.appendChild(svgEl("line", { x1: xa, y1: y, x2: xb, y2: y, stroke: "var(--axis)", "stroke-width": 2 }));
+    svg.appendChild(svgEl("circle", { cx: xb, cy: y, r: 5, fill: "var(--series-2)", stroke: "var(--surface)", "stroke-width": 2 }));
+    svg.appendChild(svgEl("circle", { cx: xa, cy: y, r: 5, fill: "var(--series-1)", stroke: "var(--surface)", "stroke-width": 2 }));
+    const hit = svgEl("rect", { class: "hit", x: 0, y: index * opt.rowHeight, width: opt.width, height: opt.rowHeight });
+    hover(hit, row.tip);
+    svg.appendChild(hit);
+  });
+  return svg;
+}
+
+/* ---------- chart: segmented bar ---------- */
+function segmentBar(segments, total) {
+  const width = 760, height = 54;
+  const svg = svgEl("svg", { viewBox: `0 0 ${width} ${height}`, role: "img" });
+  let x = 0;
+  segments.filter(s => s.value > 0).forEach(segment => {
+    const w = (segment.value / total) * width;
+    svg.appendChild(svgEl("rect", { x: x, y: 6, width: Math.max(0, w - 2), height: 26, rx: 3, fill: segment.color }));
+    if (w > 34) {
+      const label = svgEl("text", { class: "val", x: x + 7, y: 24, fill: "#fcfdfc" });
+      label.textContent = segment.value;
+      svg.appendChild(label);
+    }
+    const hit = svgEl("rect", { class: "hit", x: x, y: 0, width: w, height: height });
+    hover(hit, `<b>${esc(segment.label)}</b><br>${segment.value} / ${total} candidates<br>${esc(segment.genes || "")}`);
+    svg.appendChild(hit);
+    x += w;
+  });
+  return svg;
+}
+
+/* ---------- page assembly ---------- */
+function tile(key, value, note) {
+  return `<div class="tile"><div class="k">${esc(key)}</div><div class="v">${esc(value)}</div><div class="n">${note}</div></div>`;
+}
+function table(columns, rows) {
+  const head = columns.map(c => `<th>${esc(c.title)}</th>`).join("");
+  const body = rows.map(row => "<tr>" + columns.map(c => `<td class="${c.cls || ""}">${c.render(row)}</td>`).join("") + "</tr>").join("");
+  return `<details><summary>Data table</summary><div class="tablewrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div></details>`;
+}
+function stage(number, state, title, finding, nodes) {
+  const section = document.createElement("section");
+  section.className = "stage";
+  section.innerHTML = `<div class="rail"><span class="num">${number}</span>
+    <span class="state ${state === "done" ? "done" : "pending"}">${state === "done" ? "● 완료" : "○ 대기"}</span></div>
+    <div class="body"><h2>${esc(title)}</h2><div class="finding">${finding}</div></div>`;
+  const body = section.querySelector(".body");
+  nodes.forEach(node => body.appendChild(node));
+  document.getElementById("stages").appendChild(section);
+  return body;
+}
+function figure(svg, caption, legend) {
+  const wrap = document.createElement("figure");
+  if (legend) {
+    const box = document.createElement("div");
+    box.className = "legend";
+    box.innerHTML = legend;
+    wrap.appendChild(box);
+  }
+  wrap.appendChild(svg);
+  const cap = document.createElement("figcaption");
+  cap.innerHTML = caption;
+  wrap.appendChild(cap);
+  return wrap;
+}
+function html(markup) {
+  const node = document.createElement("div");
+  node.innerHTML = markup;
+  return node;
+}
+
+document.getElementById("runmeta").innerHTML =
+  [`생성 ${esc(REPORT.generated_at)}`, `드라이버 ${esc(REPORT.driver)}`, `맥락 ${esc(REPORT.disease)}`,
+   `출력 ${esc(REPORT.run_dir)}`].map(s => `<span>${s}</span>`).join("");
+
+const landscape = REPORT.landscape || [];
+const predictions = REPORT.predictions || [];
+const drugs = REPORT.drugs || [];
+const literature = REPORT.literature || {};
+const crispr = REPORT.crispr || [];
+const concordance = REPORT.concordance || [];
+const curves = REPORT.curves || [];
+
+const driverRow = landscape.find(r => String(r.driver).toUpperCase() === String(REPORT.driver).toUpperCase() && r.alteration === "mutation");
+const testable = landscape.filter(r => r.verdict === "TESTABLE");
+const topGene = predictions.length ? predictions[0].gene : "n/a";
+const litScores = Object.values(literature).map(v => v.score);
+const nRefs = Object.values(literature).reduce((sum, v) => sum + v.papers.length, 0);
+
+document.getElementById("tiles").innerHTML = [
+  tile("검정 가능한 드라이버", `${testable.length} / ${landscape.length}`, "양 군 모두 통계가 가능한 조합"),
+  driverRow ? tile(`${REPORT.driver} 변이 세포주`, `${driverRow.n_altered} vs ${driverRow.n_control}`,
+    `야생형 ${driverRow.n_control}주 — ${esc(driverRow.verdict)}`) : "",
+  tile("합성치사 후보", String(REPORT.n_predictions || predictions.length), `FDR 통과, 최상위 ${esc(topGene)}`),
+  tile("PubMed 참고문헌", String(nRefs), `${Object.keys(literature).length}개 후보에 대한 실제 PMID`)
+].join("");
+
+/* Stage 1 - driver landscape */
+if (landscape.length) {
+  const statusColor = v => v === "TESTABLE" ? "var(--good)" : v === "UNDERPOWERED" ? "var(--warn)" : "var(--crit)";
+  const rows = landscape.slice(0, 14).map(r => ({
+    label: `${r.driver} ${r.alteration.slice(0, 3)}`,
+    value: r.min_arm,
+    valueLabel: `${r.n_altered}v${r.n_control}`,
+    color: statusColor(r.verdict),
+    tip: `<b>${esc(r.driver)}</b> (${esc(r.alteration)})<br>변이군 ${r.n_altered} · 대조군 ${r.n_control} · 미프로파일 ${r.n_unprofiled}<br>빈도 ${(r.altered_fraction * 100).toFixed(0)}%<br><b>${esc(r.verdict)}</b>`
+  }));
+  const body = stage("01", "done", "어떤 드라이버가 실제로 검정 가능한가",
+    `세포주 코호트에서 대비를 결정하는 것은 <strong>작은 쪽 군의 크기</strong>입니다. ${REPORT.driver}는 빈도가 가장 높지만(${driverRow ? (driverRow.altered_fraction * 100).toFixed(0) : "?"}%) 바로 그 이유로 야생형 대조군이 ${driverRow ? driverRow.n_control : "?"}주뿐이라 <strong>UNDERPOWERED</strong>입니다. 검정력이 확보되는 조합은 ${testable.map(r => r.driver + " " + r.alteration).slice(0, 4).join(", ")}입니다.`,
+    [figure(barChart(rows, { tickDigits: 0 }),
+      "막대 길이 = 두 군 중 작은 쪽의 세포주 수(검정력을 결정하는 값). 우측 숫자는 변이군 vs 대조군.",
+      `<span><i style="background:var(--good)"></i>TESTABLE (≥8)</span><span><i style="background:var(--warn)"></i>UNDERPOWERED (3–7)</span><span><i style="background:var(--crit)"></i>UNTESTABLE (&lt;3)</span>`)]);
+  body.appendChild(html(table([
+    { title: "Driver", cls: "gene", render: r => esc(r.driver) },
+    { title: "Alteration", render: r => esc(r.alteration) },
+    { title: "n altered", render: r => r.n_altered },
+    { title: "n control", render: r => r.n_control },
+    { title: "Freq", render: r => (r.altered_fraction * 100).toFixed(0) + "%" },
+    { title: "Verdict", render: r => `<span class="chip ${r.verdict === "TESTABLE" ? "good" : r.verdict === "UNDERPOWERED" ? "warn" : "crit"}">${esc(r.verdict)}</span>` }
+  ], landscape)));
+}
+
+/* Stage 2 - predictions */
+if (predictions.length) {
+  const effectRows = predictions.map(p => ({
+    label: p.gene,
+    value: Math.abs(p.effect_difference),
+    valueLabel: Number(p.effect_difference).toFixed(2),
+    color: "var(--series-1)",
+    tip: `<b>${esc(p.gene)}</b><br>효과 차이 ${fmt(p.effect_difference, 3)} (변이 ${fmt(p.mutant_mean_effect, 2)} vs 야생형 ${fmt(p.wildtype_mean_effect, 2)})<br>p=${sci(p.p_value)} · q=${sci(p.q_value)}<br>변이주 의존 ${fmt(p.pct_mutant_dependent, 0)}% · 전체 ${fmt(p.pct_all_lines_dependent, 0)}%`
+  }));
+  const selRows = predictions.map(p => ({
+    label: p.gene,
+    a: Number(p.pct_mutant_dependent),
+    b: Number(p.pct_all_lines_dependent),
+    tip: `<b>${esc(p.gene)}</b><br>변이주 의존 ${fmt(p.pct_mutant_dependent, 0)}%<br>전체 세포주 의존 ${fmt(p.pct_all_lines_dependent, 0)}%<br>차이가 클수록 선택적 취약점, 작으면 공통 필수 유전자`
+  }));
+  const body = stage("02", "done", "합성치사 후보와 그 선택성",
+    `DepMap CRISPR 스크린에서 ${REPORT.driver} 변이군이 야생형보다 유의하게 더 의존하는 유전자입니다. 양성 대조가 통과했습니다 — ${REPORT.driver} 자신이 자기 변이주에서 가장 깊게 떨어집니다. <strong>효과 크기만으로는 부족합니다</strong>: 전체 세포주에서도 똑같이 필수인 유전자는 합성치사가 아니라 공통 필수 유전자이므로, 아래 두 번째 차트의 두 점이 벌어진 후보만 오가노이드에 투입할 가치가 있습니다.`,
+    [
+      figure(barChart(effectRows, { tickDigits: 2 }),
+        "효과 차이 = 변이군 평균 − 야생형 평균 gene effect. 음수일수록 변이군이 더 큰 타격을 받습니다(막대는 절댓값).", ""),
+      figure(dumbbell(selRows),
+        "두 점의 간격이 선택성입니다. 겹쳐 있으면 변이와 무관하게 필수인 유전자입니다.",
+        `<span><i style="background:var(--series-1)"></i>${esc(REPORT.driver)} 변이주 의존 비율</span><span><i style="background:var(--series-2)"></i>전체 세포주 의존 비율</span>`)
+    ]);
+  body.appendChild(html(table([
+    { title: "Rank", render: p => p.rank },
+    { title: "Gene", cls: "gene", render: p => esc(p.gene) },
+    { title: "MUT mean", render: p => fmt(p.mutant_mean_effect, 3) },
+    { title: "WT mean", render: p => fmt(p.wildtype_mean_effect, 3) },
+    { title: "Δ", render: p => fmt(p.effect_difference, 3) },
+    { title: "p", render: p => sci(p.p_value) },
+    { title: "q", render: p => sci(p.q_value) },
+    { title: "%MUT dep", render: p => fmt(p.pct_mutant_dependent, 0) },
+    { title: "%all dep", render: p => fmt(p.pct_all_lines_dependent, 0) }
+  ], predictions)));
+}
+
+/* Stage 3 - druggability */
+if (drugs.length) {
+  const byGene = new Map();
+  drugs.forEach(row => {
+    if (!byGene.has(row.gene)) byGene.set(row.gene, { verdict: row.verdict, drugs: [] });
+    if (row.drug) byGene.get(row.gene).drugs.push(row);
+  });
+  const classify = verdict => String(verdict).startsWith("CLINICAL") ? "clinical"
+    : String(verdict).startsWith("PRECLINICAL") ? "preclinical"
+    : String(verdict).startsWith("NO INHIBITOR") ? "noninhibitor" : "crispr";
+  const buckets = { clinical: [], preclinical: [], noninhibitor: [], crispr: [] };
+  byGene.forEach((value, gene) => buckets[classify(value.verdict)].push(gene));
+  const segments = [
+    { label: "임상단계 저해제 있음", value: buckets.clinical.length, color: "var(--series-1)", genes: buckets.clinical.join(", ") },
+    { label: "전임상 probe만", value: buckets.preclinical.length, color: "var(--series-2)", genes: buckets.preclinical.join(", ") },
+    { label: "화합물은 있으나 저해제 아님", value: buckets.noninhibitor.length, color: "var(--warn)", genes: buckets.noninhibitor.join(", ") },
+    { label: "화합물 없음 — CRISPR 전용", value: buckets.crispr.length, color: "var(--axis)", genes: buckets.crispr.join(", ") }
+  ];
+  const total = byGene.size;
+  const body = stage("03", "done", "약물로 공략 가능한 후보와 CRISPR 전용 후보",
+    `Broad Repurposing Hub 매핑입니다. 표적 주석(annotation)은 기전이 아니므로 <strong>MOA가 저해(inhibitor/antagonist/degrader)인 화합물만</strong> 약물 arm으로 셉니다 — 그러지 않으면 기질인 cystine이 SLC7A11의 "저해제"로 잡힙니다. 화합물이 없는 후보는 실패가 아니라 <strong>실험 설계의 분기</strong>입니다: 약물 arm 대신 CRISPR arm으로 검증합니다.`,
+    [figure(segmentBar(segments, total),
+      "후보 " + total + "개의 공략 가능성 분류. 각 구간에 마우스를 올리면 해당 유전자 목록이 보입니다.",
+      segments.map(s => `<span><i style="background:${s.color}"></i>${esc(s.label)} (${s.value})</span>`).join(""))]);
+  const drugRows = drugs.filter(d => d.drug);
+  body.appendChild(html(table([
+    { title: "Gene", cls: "gene", render: d => esc(d.gene) },
+    { title: "Drug", render: d => esc(d.drug) },
+    { title: "Phase", render: d => esc(d.clinical_phase) },
+    { title: "MOA", render: d => esc(d.moa) },
+    { title: "Inhibitory", render: d => (d.inhibitory === true || d.inhibitory === "True") ? "yes" : "no" }
+  ], drugRows)));
+}
+
+/* Stage 4 - literature */
+if (Object.keys(literature).length) {
+  const genes = Object.keys(literature);
+  const rows = genes.map(gene => ({
+    label: gene,
+    value: literature[gene].score,
+    valueLabel: `${literature[gene].score}  (쌍 ${literature[gene].n_pair_papers ?? 0}/${literature[gene].n_papers})`,
+    color: literature[gene].score >= 65 ? "var(--good)" : literature[gene].score >= 35 ? "var(--series-1)" : "var(--axis)",
+    tip: `<b>${esc(gene)}</b><br>${esc(literature[gene].interpretation)}<br>논문 ${literature[gene].n_papers}편 · 점수 ${literature[gene].score}/100<br>${esc(REPORT.driver)}와 함께 다룬 논문 ${literature[gene].n_pair_papers ?? 0}편`
+  })).sort((a, b) => b.value - a.value);
+  const noHit = genes.filter(g => literature[g].papers.length === 0);
+  const body = stage("04", "done", "문헌 근거",
+    `각 후보에 대해 PubMed를 <strong>실제로 조회한</strong> 결과입니다(NCBI Entrez). 점수는 논문 수, 유전자 쌍 동시출현, 합성치사 관련 표현, 직접 실험 근거, 질환 맥락, 최신성에서 반박 표현 패널티를 뺀 값입니다. ${noHit.length ? `<strong>${noHit.join(", ")}</strong>는 PubMed 근거가 없습니다 — 없는 것을 없다고 표시하며, 그럴듯한 인용으로 채우지 않습니다.` : ""} 문헌이 적다는 것은 틀렸다는 뜻이 아니라 <strong>아직 검증되지 않았다</strong>는 뜻이므로, 통계 근거와 독립적으로 읽어야 합니다.`,
+    [figure(barChart(rows, { max: 100, tickDigits: 0 }),
+      "0–100 문헌 <em>기록량</em> 점수이지 진실의 양이 아닙니다. 막대 옆 괄호는 검색된 논문 중 드라이버와 후보를 <em>함께</em> 다룬 편수 — 이 값이 0이면 높은 점수라도 단순 동시 언급입니다(예: 유전자 패널 논문).", "")]);
+  const list = document.createElement("ul");
+  list.className = "refs";
+  genes.forEach(gene => {
+    const entry = literature[gene];
+    if (!entry.papers.length) {
+      list.appendChild(html(`<li><span class="gene">${esc(gene)}</span> <span class="none">— PubMed 검색 결과 없음 (${esc(entry.query)})</span></li>`).firstChild);
+      return;
+    }
+    entry.papers.forEach(paper => {
+      list.appendChild(html(`<li><span class="gene">${esc(gene)}</span>
+        <span class="meta">PMID ${esc(paper.pmid)} · ${esc(paper.journal || "")} ${paper.year || ""}</span>
+        <span class="title">${paper.pair ? "" : '<span class="none">[단순 언급] </span>'}${esc(paper.title)} <a href="https://pubmed.ncbi.nlm.nih.gov/${esc(paper.pmid)}/" target="_blank" rel="noopener">PubMed ↗</a></span></li>`).firstChild);
+    });
+  });
+  const details = document.createElement("details");
+  details.innerHTML = `<summary>참고문헌 ${nRefs}건 (PMID 링크)</summary>`;
+  const pad = document.createElement("div");
+  pad.className = "tablewrap";
+  pad.appendChild(list);
+  details.appendChild(pad);
+  body.appendChild(details);
+}
+
+/* Stage 5 - experimental validation */
+{
+  const hasExperiment = crispr.length || curves.length;
+  const nodes = [];
+  if (curves.length) {
+    const rows = curves.map(c => ({
+      label: `${c.organoid} ${String(c.drug).slice(0, 10)}`,
+      value: Number(c.auc),
+      valueLabel: Number(c.auc).toFixed(2),
+      color: "var(--series-1)",
+      tip: `<b>${esc(c.organoid)}</b> · ${esc(c.drug)}<br>유전형 ${esc(c.genotype || "n/a")}<br>IC50 ${fmt(c.ic50_um, 3)} µM · AUC ${fmt(c.auc, 3)} · Emax ${fmt(c.emax, 3)}`
+    }));
+    nodes.push(figure(barChart(rows, { max: 1, tickDigits: 1, labelWidth: 150 }),
+      "AUC 1.0 = 효과 없음, 0 = 완전 사멸. 오가노이드별 용량반응 곡선에서 계산.", ""));
+  }
+  if (crispr.length) {
+    const rows = crispr.map(c => ({
+      label: c.gene,
+      value: Math.abs(Number(c.selectivity_delta)),
+      valueLabel: Number(c.selectivity_delta).toFixed(2),
+      color: String(c.verdict).startsWith("SELECTIVE") ? "var(--good)" : String(c.verdict).startsWith("NON-SELECTIVE") ? "var(--warn)" : "var(--axis)",
+      tip: `<b>${esc(c.gene)}</b><br>변이 오가노이드 log2FC ${fmt(c.log2fc_mutant, 2)} · 야생형 ${fmt(c.log2fc_wildtype, 2)}<br>선택성 Δ ${fmt(c.selectivity_delta, 3)} · p=${sci(c.selectivity_p)}<br>${esc(c.verdict)}`
+    }));
+    nodes.push(figure(barChart(rows, { tickDigits: 2 }),
+      "선택성 Δ = 변이 오가노이드 log2FC − 야생형 log2FC. 초록은 선택적, 주황은 두 유전형 모두 사멸(공통 필수).", ""));
+  }
+  if (!hasExperiment) {
+    nodes.push(html(`<div class="callout"><div class="h">사전 지정 기준</div>
+      <p>오가노이드 데이터가 아직 투입되지 않았습니다. 예측을 반증 가능하게 만들려면, 측정 전에 다음을 고정해야 합니다 —
+      ① 적중 기준: 변이 오가노이드에서 log2FC ≤ −0.5 <em>그리고</em> 야생형 대비 선택성 Δ ≤ −0.5,
+      ② KO 패널에 <strong>예측이 낮게 평가한 유전자도 포함</strong>(없으면 precision@k가 base rate와 같아져 우연과 구분 불가),
+      ③ 정상 췌장 오가노이드 대조군으로 치료 창(window) 확인.</p></div>`));
+  }
+  stage("05", crispr.length || curves.length ? "done" : "pending", "오가노이드 기능 검증",
+    crispr.length || curves.length
+      ? `측정된 오가노이드 데이터입니다. 약물 arm은 유전형군 간 AUC/IC50 비교로, CRISPR arm은 각 오가노이드 자신의 비표적 대조 대비 log2FC로 평가하며, <strong>두 유전형 모두에서 죽는 유전자는 공통 필수</strong>로 분류되어 합성치사 근거가 되지 못합니다.`
+      : `파이프라인의 예측 단계는 완료됐고, 이 단계는 실험 데이터를 기다립니다. 측정값이 들어오면 동일한 리포트에 자동으로 채워집니다.`,
+    nodes);
+}
+
+/* Stage 6 - concordance */
+{
+  const nodes = [];
+  if (concordance.length) {
+    const hits = concordance.filter(c => c.experimental_hit === true || c.experimental_hit === "True").length;
+    nodes.push(html(`<div class="callout"><div class="h">채점 결과</div>
+      <p>공유 유전자 ${concordance.length}개 중 실험 적중 ${hits}개. 반증된 예측이 먼저 보고되며, 상위 집합이 전체 검정 집합과 같으면 enrichment는 검정 불가로 표시됩니다.</p></div>`));
+    nodes.push(html(table([
+      { title: "Gene", cls: "gene", render: c => esc(c.gene) },
+      { title: "Predicted rank", render: c => c.predicted_rank },
+      { title: "Predicted score", render: c => fmt(c.predicted_score, 3) },
+      { title: "Measured", render: c => fmt(c.measured_effect, 3) },
+      { title: "Hit", render: c => (c.experimental_hit === true || c.experimental_hit === "True") ? "✓" : "✗" }
+    ], concordance)));
+  } else {
+    nodes.push(html(`<div class="callout"><div class="h">아직 채점 불가</div>
+      <p>예측과 실험을 맞대는 단계입니다. <code>compare_prediction_with_experiment</code>가 반증된 예측 → 확인된 예측 → 예측이 놓친 적중 순으로 보고하고,
+      precision@k를 permutation null에 대해 검정한 뒤 PREDICTIVE / WEAK / NOT PREDICTIVE 판정을 냅니다. 이 판정이 연구 질문에 대한 답입니다.</p></div>`));
+  }
+  stage("06", concordance.length ? "done" : "pending", "예측 vs 실험 — 연구 질문에 대한 답", 
+    concordance.length ? "예측 순위와 측정값의 일치도입니다." : "실험 데이터가 들어오면 이 섹션이 연구 질문에 직접 답합니다.", nodes);
+}
+
+document.getElementById("foot").innerHTML = `
+  <div>데이터 출처 — DepMap CRISPR gene effect (Chronos) &amp; model annotation, cBioPortal CCLE 변이/CN 콜,
+  Broad Repurposing Hub, SynLethDB 2.0, NCBI PubMed (Entrez E-utilities).</div>
+  <div style="margin-top:8px">한계 — 세포주 코호트는 환자 집단이 아니며 2D 배양에 적응한 모델에 편향돼 있습니다.
+  단일 유전자 KO 의존성은 합성치사의 대리 지표이고, 세포주 수준의 선택성은 치료 창을 보장하지 않습니다.
+  문헌 점수는 보고된 양이지 진실의 양이 아닙니다.</div>
+  <div style="margin-top:8px">생성 ${esc(REPORT.generated_at)} · Biomni PDAC translational pipeline</div>`;
+</script>
+
+</html>

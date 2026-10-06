@@ -1,0 +1,13 @@
+gene,drug,clinical_phase,moa,inhibitory,verdict,synlethdb
+ADAR,,,,False,CRISPR-ONLY,SynLethDB partner of KRAS (High Throughput)
+VPS4A,,,,False,CRISPR-ONLY,
+DHFR,chlorproguanil,Launched,dihydrofolate reductase inhibitor,True,CLINICAL-STAGE INHIBITOR,SynLethDB partner of KRAS (High Throughput)
+DHFR,methotrexate,Launched,dihydrofolate reductase inhibitor,True,CLINICAL-STAGE INHIBITOR,SynLethDB partner of KRAS (High Throughput)
+DHFR,pemetrexed,Launched,dihydrofolate reductase inhibitor|thymidylate synthase inhibitor,True,CLINICAL-STAGE INHIBITOR,SynLethDB partner of KRAS (High Throughput)
+DHFR,pralatrexate,Launched,dihydrofolate reductase inhibitor,True,CLINICAL-STAGE INHIBITOR,SynLethDB partner of KRAS (High Throughput)
+ARF4,,,,False,CRISPR-ONLY,SynLethDB partner of KRAS (GenomeRNAi)
+NDE1,,,,False,CRISPR-ONLY,SynLethDB partner of KRAS (Text Mining)
+SREBF1,,,,False,CRISPR-ONLY,
+TEAD1,,,,False,CRISPR-ONLY,SynLethDB partner of KRAS (GenomeRNAi)
+FADD,,,,False,CRISPR-ONLY,
+CHKA,,,,False,CRISPR-ONLY,
