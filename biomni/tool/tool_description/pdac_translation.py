@@ -93,6 +93,21 @@ description = [
                 "type": "str",
             },
             {
+                "default": True,
+                "description": "Include the curated RAS-pathway drug set bundled with the module (KRAS G12C/G12D "
+                "inhibitors, SOS1, SHP2, WRN, TEAD and others). The local Repurposing Hub snapshot predates every "
+                "KRAS inhibitor, so a KRAS project sees no pharmacology without this",
+                "name": "include_curated",
+                "type": "bool",
+            },
+            {
+                "default": True,
+                "description": "Query ChEMBL live for compounds with a recorded mechanism of action against each "
+                "gene; failures degrade to the offline sources and are reported",
+                "name": "include_chembl",
+                "type": "bool",
+            },
+            {
                 "default": None,
                 "description": "Write the full gene-drug table to this CSV path",
                 "name": "output_csv_path",
@@ -394,6 +409,21 @@ description = [
                 "type": "int",
             },
             {
+                "default": None,
+                "description": "Scan table (e.g. pancancer_g12d.csv) to run the strict filter cascade over; "
+                "defaults to <run_dir>/pancancer_g12d.csv. Adds the protocol funnel, final candidates and the "
+                "organoid knockout panel",
+                "name": "protocol_csv",
+                "type": "str",
+            },
+            {"default": 0.05, "description": "Cascade gate: BH q-value cutoff", "name": "protocol_q_threshold", "type": "float"},
+            {"default": -0.8, "description": "Cascade gate: Cohen's d cutoff", "name": "protocol_min_cohens_d", "type": "float"},
+            {"default": 30.0, "description": "Cascade gate: minimum percent of the mutant arm that must be dependent", "name": "protocol_min_pct_mutant", "type": "float"},
+            {"default": 50.0, "description": "Cascade gate: maximum percent of all screened lines that may be dependent", "name": "protocol_max_pct_all", "type": "float"},
+            {"default": None, "description": "Table from validate_candidates_biologically (default: <run_dir>/biovalidation.csv); adds PDAC-restricted effect, KRAS axis, TCGA survival and structure confidence per candidate", "name": "biovalidation_csv", "type": "str"},
+            {"default": 30, "description": "How many near-miss genes to query PubMed for when building the combination-candidate table", "name": "combination_max_genes", "type": "int"},
+            {"default": None, "description": "Directory holding the Repurposing Hub table, used for druggable near-miss candidates", "name": "data_lake_path", "type": "str"},
+            {
                 "default": True,
                 "description": "True writes a complete HTML document; False writes a body fragment for embedding "
                 "in a host that supplies the document skeleton",
@@ -414,5 +444,108 @@ description = [
             },
         ],
         "required_parameters": [],
+    },
+    {
+        "description": "Discover driver-selective dependencies in a pan-cancer cohort, then check whether each "
+        "candidate is actually present in one cancer type. Use when the driver is near-universal in the cancer "
+        "of interest and its wild-type arm is too small for a contrast (KRAS in PDAC: 40 mutant vs 4 wild-type, "
+        "versus 47 vs 791 pan-cancer for G12D). Supports allele-specific arms, excludes other alleles of the same "
+        "driver from both arms, re-tests every candidate with the mutant arm's dominant lineage removed so a "
+        "tissue effect is visible, and reports a PRESENT / WEAK / ABSENT IN CONTEXT verdict per gene.",
+        "name": "discover_sl_pan_cancer_with_context",
+        "optional_parameters": [
+            {"default": "KRAS", "description": "Driver gene defining the genotype", "name": "driver_gene", "type": "str"},
+            {"default": "G12D", "description": "Restrict the mutant arm to one protein change, e.g. 'G12D'; None uses any mutation", "name": "allele", "type": "str"},
+            {"default": "Pancreatic Cancer", "description": "Cancer type the candidates are re-checked in", "name": "context_cancer_type", "type": "str"},
+            {"default": None, "description": "Directory holding the DepMap files", "name": "data_lake_path", "type": "str"},
+            {"default": None, "description": "Optional genotype table overriding the default call source", "name": "mutation_csv_path", "type": "str"},
+            {"default": 20, "description": "Number of candidates carried into the context step and printed", "name": "top_n", "type": "int"},
+            {"default": 0.05, "description": "One-sided Welch p-value cutoff", "name": "p_threshold", "type": "float"},
+            {"default": 0.25, "description": "Benjamini-Hochberg q-value cutoff", "name": "fdr_threshold", "type": "float"},
+            {"default": -0.2, "description": "Required mutant-minus-wild-type gene-effect difference", "name": "min_effect_difference", "type": "float"},
+            {"default": -0.3, "description": "The mutant group mean gene effect must be below this", "name": "max_mutant_mean_effect", "type": "float"},
+            {"default": None, "description": "Require Cohen's d at or below this value (e.g. -0.8 for a large effect); None disables it", "name": "min_cohens_d", "type": "float"},
+            {"default": None, "description": "Require this percentage of the altered arm to be dependent, separating a group-wide shift from one driven by a few lines", "name": "min_pct_mutant_dependent", "type": "float"},
+            {"default": None, "description": "Reject genes depleted in more than this percentage of ALL screened lines", "name": "max_pct_all_dependent", "type": "float"},
+            {"default": True, "description": "Drop common-essential genes", "name": "exclude_pan_essential", "type": "bool"},
+            {"default": None, "description": "Write the full pan-cancer table to this CSV path", "name": "output_csv_path", "type": "str"},
+        ],
+        "required_parameters": [],
+    },
+    {
+        "description": "Stratify driver-mutant cell lines by a SECOND alteration instead of by the driver itself, "
+        "for cancers where the driver is near-universal and has no wild-type control arm. In PDAC this splits "
+        "KRAS-mutant lines by TP53, SMAD4 or CDKN2A status and asks what the co-altered genotype depends on. The "
+        "result is a dependency of the co-altered genotype, not of the driver, and the report states that "
+        "explicitly; both arms carry the driver, so nothing here is evidence about the driver itself.",
+        "name": "discover_comutation_stratified_sl",
+        "optional_parameters": [
+            {"default": "KRAS", "description": "Driver every line in the cohort must carry", "name": "driver_gene", "type": "str"},
+            {"default": "TP53", "description": "Second gene whose status splits the cohort, e.g. TP53, SMAD4, CDKN2A", "name": "comutation_gene", "type": "str"},
+            {"default": "mutation", "description": "Alteration type for the second gene: mutation, deletion or amplification", "name": "comutation_event", "type": "str"},
+            {"default": None, "description": "Restrict the cohort to one driver allele, e.g. 'G12D'", "name": "driver_allele", "type": "str"},
+            {"default": "Pancreatic Cancer", "description": "Cancer context", "name": "cancer_type", "type": "str"},
+            {"default": None, "description": "Directory holding the DepMap files", "name": "data_lake_path", "type": "str"},
+            {"default": None, "description": "Optional genotype table overriding the default call source", "name": "mutation_csv_path", "type": "str"},
+            {"default": 20, "description": "Number of candidates printed", "name": "top_n", "type": "int"},
+            {"default": 0.05, "description": "One-sided Welch p-value cutoff", "name": "p_threshold", "type": "float"},
+            {"default": 0.25, "description": "Benjamini-Hochberg q-value cutoff", "name": "fdr_threshold", "type": "float"},
+            {"default": -0.2, "description": "Required between-arm gene-effect difference", "name": "min_effect_difference", "type": "float"},
+            {"default": -0.3, "description": "The co-altered group mean gene effect must be below this", "name": "max_mutant_mean_effect", "type": "float"},
+            {"default": None, "description": "Require Cohen's d at or below this value (e.g. -0.8 for a large effect); None disables it", "name": "min_cohens_d", "type": "float"},
+            {"default": None, "description": "Require this percentage of the altered arm to be dependent, separating a group-wide shift from one driven by a few lines", "name": "min_pct_mutant_dependent", "type": "float"},
+            {"default": None, "description": "Reject genes depleted in more than this percentage of ALL screened lines", "name": "max_pct_all_dependent", "type": "float"},
+            {"default": True, "description": "Drop common-essential genes", "name": "exclude_pan_essential", "type": "bool"},
+            {"default": None, "description": "Write the full table to this CSV path", "name": "output_csv_path", "type": "str"},
+        ],
+        "required_parameters": [],
+    },
+    {
+        "description": "Separate dependencies shared by two driver alleles from those specific to one, e.g. KRAS "
+        "G12D vs G12V. Runs THREE contrasts - allele A vs wild-type, allele B vs wild-type, and allele A vs "
+        "allele B directly - and reports a gene as allele-specific only when the direct contrast confirms it, "
+        "because a gene can clear the gate for one allele and miss it for the other purely through arm size. "
+        "Candidates are checked for presence in a context cancer type and annotated with the MRTX1133 "
+        "combination axis they sit on (curated prior knowledge, dated).",
+        "name": "compare_allele_specific_dependencies",
+        "optional_parameters": [
+            {"default": "KRAS", "description": "Driver carrying the alleles", "name": "driver_gene", "type": "str"},
+            {"default": "G12D", "description": "First protein change to compare, reported as clinical priority", "name": "allele_a", "type": "str"},
+            {"default": "G12V", "description": "Second protein change to compare", "name": "allele_b", "type": "str"},
+            {"default": "pan-cancer", "description": "Cohort for the discovery scans: 'pan-cancer' or a cancer type. Within PDAC the wild-type arm is too small for either allele contrast", "name": "discovery_cohort", "type": "str"},
+            {"default": "Pancreatic Cancer", "description": "Cancer type candidates are checked for presence in", "name": "context_cancer_type", "type": "str"},
+            {"default": None, "description": "Directory holding the DepMap files", "name": "data_lake_path", "type": "str"},
+            {"default": None, "description": "Optional genotype table overriding the default call source", "name": "mutation_csv_path", "type": "str"},
+            {"default": 15, "description": "Number of rows printed per class", "name": "top_n", "type": "int"},
+            {"default": 0.05, "description": "One-sided Welch p-value cutoff", "name": "p_threshold", "type": "float"},
+            {"default": 0.25, "description": "Benjamini-Hochberg q-value cutoff", "name": "fdr_threshold", "type": "float"},
+            {"default": -0.2, "description": "Required allele-minus-wild-type gene-effect difference", "name": "min_effect_difference", "type": "float"},
+            {"default": -0.3, "description": "The allele group mean gene effect must be below this", "name": "max_mutant_mean_effect", "type": "float"},
+            {"default": True, "description": "Drop common-essential genes", "name": "exclude_pan_essential", "type": "bool"},
+            {"default": None, "description": "Write the joined three-contrast table to this CSV path", "name": "output_csv_path", "type": "str"},
+        ],
+        "required_parameters": [],
+    },
+    {
+        "description": "Run the biological validation battery on candidate genes: PDAC-restricted effect size "
+        "(against both the wild-type arm and all other PDAC lines), KRAS effector axis assignment, TCGA PAAD "
+        "survival by median expression split with a log-rank test, direct inhibitor availability OR a druggable "
+        "STRING neighbour within one hop, ChEMBL target class, and AlphaFold model confidence (pLDDT - model "
+        "confidence and a prerequisite for pocket work, NOT a pocket-quality score).",
+        "name": "validate_candidates_biologically",
+        "optional_parameters": [
+            {"default": "KRAS", "description": "Driver defining the PDAC-restricted contrast", "name": "driver_gene", "type": "str"},
+            {"default": "G12D", "description": "Allele defining the PDAC-restricted contrast", "name": "allele", "type": "str"},
+            {"default": None, "description": "Directory holding the DepMap files", "name": "data_lake_path", "type": "str"},
+            {"default": None, "description": "Optional genotype table overriding the default call source", "name": "mutation_csv_path", "type": "str"},
+            {"default": 0.7, "description": "STRING combined-score cutoff for the one-hop neighbourhood", "name": "string_min_score", "type": "float"},
+            {"default": 15, "description": "Neighbours examined per gene when looking for a druggable one", "name": "max_neighbours", "type": "int"},
+            {"default": True, "description": "Run the TCGA PAAD log-rank test (needs cBioPortal)", "name": "include_survival", "type": "bool"},
+            {"default": True, "description": "Fetch AlphaFold model confidence (needs UniProt and AlphaFold DB)", "name": "include_structure", "type": "bool"},
+            {"default": None, "description": "Write the per-candidate table to this CSV path", "name": "output_csv_path", "type": "str"},
+        ],
+        "required_parameters": [
+            {"default": None, "description": "Genes to validate (list or comma-separated string)", "name": "candidate_genes", "type": "list[str]"},
+        ],
     },
 ]

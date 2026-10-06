@@ -27,6 +27,9 @@ Two modes:
                   --screen-csv pdo_screen.csv --genotype-csv pdo_genotype.csv \
                   --crispr-csv crispr_validation.csv
 
+  리포트는 각 실행 끝에 <output-dir>/pdac_report.html 로 생성됩니다. 브라우저로 보려면
+  별도 스크립트를 쓰세요:  python serve_report.py --dir ./pdac_run
+
   agent   Hand the research question to the Biomni A1 agent and let it plan the tool calls:
 
               python run_pdac_agent.py --mode agent
@@ -50,6 +53,30 @@ WORKFLOW_HINT = (
 )
 
 DEFAULT_OUTPUT_DIR = "./pdac_run"
+
+
+def write_report(args) -> str | None:
+    """Render the HTML report from whatever the run has produced so far."""
+    from biomni.tool.pdac_translation import generate_pdac_report
+
+    _section("REPORT - HTML dossier")
+    log = generate_pdac_report(
+        run_dir=args.output_dir,
+        driver=args.driver,
+        include_literature=not args.no_literature,
+        email=args.email,
+    )
+    print(log)
+    if log.startswith("FAILURE"):
+        return None
+    path = os.path.abspath(os.path.join(args.output_dir, "pdac_report.html"))
+    print(
+        "\n브라우저로 보려면 리포트 서버를 띄우세요 (파이프라인과 분리된 독립 스크립트입니다):\n"
+        f"  python serve_report.py --dir {args.output_dir}                 # http://localhost:8000/\n"
+        f"  python serve_report.py --dir {args.output_dir} --background    # 백그라운드 실행\n"
+        f"  파일 경로: {path}"
+    )
+    return path
 
 
 def _section(title: str) -> None:
@@ -76,7 +103,7 @@ def run_prediction_stages(args) -> None:
     os.makedirs(args.output_dir, exist_ok=True)
     prediction_csv = os.path.join(args.output_dir, "prediction_depmap.csv")
 
-    _section(f"STAGE 1/6 - PDAC driver landscape (which driver can this cohort test?)")
+    _section("STAGE 1/6 - PDAC driver landscape (which driver can this cohort test?)")
     print(
         profile_pdac_driver_landscape(
             cancer_type=args.cancer_type,
@@ -249,6 +276,9 @@ def main() -> None:
     parser.add_argument("--data-path", default="./data", help="agent mode only")
     parser.add_argument("--query", default=None, help="override the research question (agent mode)")
     parser.add_argument("--guided", action="store_true", help="append the registered tool list as a hint")
+    parser.add_argument("--no-report", action="store_true", help="skip the HTML report at the end of the run")
+    parser.add_argument("--no-literature", action="store_true", help="build the report without querying PubMed")
+    parser.add_argument("--email", default=None, help="contact e-mail passed to NCBI Entrez")
     args = parser.parse_args()
 
     if args.mode == "agent":
@@ -258,6 +288,8 @@ def main() -> None:
         run_prediction_stages(args)
     if args.stages in ("7-8", "all"):
         run_experiment_stages(args)
+    if not args.no_report:
+        write_report(args)
 
 
 if __name__ == "__main__":

@@ -1034,6 +1034,32 @@ _DIRECT_EVIDENCE_TERMS = [
 ]
 
 
+def sl_literature_queries(candidate_gene: str, mutated_gene: str, disease: str) -> list[tuple]:
+    """The three PubMed query tiers used for SL literature validation, as (label, query) pairs.
+
+    Shared by validate_sl_candidates_with_pubmed and the PDAC report so that a gene cannot be given
+    two different literature scores by two parts of the same toolkit. The refutation tier is the
+    reason this is three queries and not one: it deliberately searches for reports that argue the
+    interaction away.
+    """
+    pair = f"({mutated_gene}[Title/Abstract] AND {candidate_gene}[Title/Abstract])"
+    return [
+        ("disease-specific", f'("{disease}"[Title/Abstract] OR "{disease}"[MeSH Terms]) AND {pair}'),
+        (
+            "SL-focused",
+            f"{pair} AND (synthetic lethal*[Title/Abstract] OR dependency[Title/Abstract] OR "
+            "vulnerability[Title/Abstract] OR sensitiz*[Title/Abstract] OR screen[Title/Abstract])",
+        ),
+        (
+            "refutation-focused",
+            f"{pair} AND (nonessential[Title/Abstract] OR non-essential[Title/Abstract] OR "
+            "dispensable[Title/Abstract] OR reproducib*[Title/Abstract] OR off-target[Title/Abstract] OR "
+            "controvers*[Title/Abstract] OR reevaluat*[Title/Abstract] OR re-evaluat*[Title/Abstract] OR "
+            "reassess*[Title/Abstract] OR fail*[Title/Abstract])",
+        ),
+    ]
+
+
 def _entrez_esearch(query: str, max_papers: int, email: str | None, api_key: str | None) -> list[str]:
     params = {
         "db": "pubmed",
@@ -1278,24 +1304,7 @@ def validate_sl_candidates_with_pubmed(
         pair = f'"{mutated_gene}"[Title/Abstract] AND "{gene}"[Title/Abstract]{date_filter}'
         # Tier 1 anchors the disease context; tier 2 deliberately hunts for synthetic-lethality
         # claims AND their refutations outside that context; tier 3 is the unrestricted pair.
-        tiers = [
-            (
-                "disease-specific",
-                f'("{disease}"[Title/Abstract] OR "{disease}"[MeSH Terms]) AND {pair}',
-            ),
-            (
-                "SL-focused",
-                f"{pair} AND (synthetic lethal*[Title/Abstract] OR dependency[Title/Abstract] OR "
-                "vulnerability[Title/Abstract] OR sensitiz*[Title/Abstract] OR screen[Title/Abstract])",
-            ),
-            (
-                "refutation-focused",
-                f"{pair} AND (nonessential[Title/Abstract] OR non-essential[Title/Abstract] OR "
-                "dispensable[Title/Abstract] OR reproducib*[Title/Abstract] OR off-target[Title/Abstract] OR "
-                "controvers*[Title/Abstract] OR reevaluat*[Title/Abstract] OR re-evaluat*[Title/Abstract] OR "
-                "reassess*[Title/Abstract] OR fail*[Title/Abstract])",
-            ),
-        ]
+        tiers = sl_literature_queries(gene, mutated_gene, disease)
 
         pmids: list[str] = []
         used_queries = []
