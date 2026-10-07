@@ -45,6 +45,8 @@ from biomni.tool.synthetic_lethality import (
     _http_get,
     _http_post,
     _load_depmap,
+    _mutation_status_from_cbioportal,
+    _normalize_cell_line_name,
     _parse_gene_list,
     _resolve_data_lake,
     _select_cancer_models,
@@ -2031,6 +2033,11 @@ def generate_pdac_report(
         pool = protocol_frame[protocol_frame["gene"].isin(payload["protocol"].get("combination_pool", []))]
         payload["protocol"]["combination"] = _combination_candidates(pool, literature, data_lake_path)
 
+    benchmark = _read_optional_csv(os.path.join(run_dir, "benchmark_audit.csv"))
+    if benchmark is not None:
+        payload["benchmark"] = benchmark.to_dict("records")
+        payload["sections"].append("benchmark")
+
     biovalidation = _read_optional_csv(biovalidation_csv or os.path.join(run_dir, "biovalidation.csv"))
     if biovalidation is not None:
         payload["biovalidation"] = biovalidation.to_dict("records")
@@ -2607,7 +2614,20 @@ if (protocol) {
         <div class="ev ${bio.tcga_survival === "yes" ? "ok" : "no"}"><div class="h">TCGA PAAD 생존</div><div class="v">
           ${esc(String(bio.tcga_survival))} · log-rank p ${sci(bio.tcga_logrank_p)}</div></div>
         <div class="ev no"><div class="h">축 · 구조</div><div class="v">
-          ${esc(String(bio.kras_axis || "-"))}<br>pLDDT ${fmt(bio.mean_plddt, 1)} (pocket 점수 아님)</div></div>` : ""}
+          ${esc(String(bio.kras_axis || "-"))}<br>pLDDT ${fmt(bio.mean_plddt, 1)} (pocket 점수 아님)</div></div>
+        <div class="ev ${String(bio.sanger_verdict) === "REPLICATED" ? "ok" : "warn"}"><div class="h">Sanger 독립 복제</div><div class="v">
+          d ${fmt(bio.sanger_d, 2)}<br><b>${esc(String(bio.sanger_verdict))}</b></div></div>
+        <div class="ev ${bio.gtex_toxicity_flag === true || bio.gtex_toxicity_flag === "True" ? "warn" : "ok"}"><div class="h">GTEx 정상 췌장</div><div class="v">
+          ${fmt(bio.gtex_pancreas_tpm, 1)} TPM${(bio.gtex_toxicity_flag === true || bio.gtex_toxicity_flag === "True") ? "<br><b>독성 위험 플래그</b>" : "<br>50 TPM 미만"}</div></div>
+        <div class="ev no"><div class="h">임상시험</div><div class="v">
+          ${Number(bio.n_active_trials) ? `${bio.n_active_trials}건 · ${esc(String(bio.top_trial))}` : "해당 없음"}</div></div>
+        <div class="ev ${Number(bio.fpocket_druggability) >= 0.5 ? "ok" : "no"}"><div class="h">fpocket 포켓</div><div class="v">
+          druggability ${fmt(bio.fpocket_druggability, 3)} · ${fmt(bio.fpocket_volume, 0)} Å³<br>
+          <b>${esc(String(bio.fpocket_verdict))}</b>
+          ${(bio.fpocket_coherent === false || bio.fpocket_coherent === "False") ? "<br>Score 음수 — 형태 불량" : ""}</div></div>
+        <div class="ev ${bio.prism_selective_drugs ? "ok" : "no"}"><div class="h">PRISM 약물 민감도</div><div class="v">
+          ${bio.prism_selective_drugs && String(bio.prism_selective_drugs) !== "nan"
+            ? esc(String(bio.prism_selective_drugs)) + " 선택적" : "선택적 약물 없음"}</div></div>` : ""}
       </div>
       ${mech ? `<p class="mech"><b>KRAS 연결 기전</b> — ${esc(mech)}</p>` : ""}`;
     cards.appendChild(card);
@@ -2664,6 +2684,40 @@ if (protocol) {
     { title: "%all dep", render: r => fmt(r.pct_all_dependent, 0) },
   ], protocol.passing)));
 
+  const benchmark = REPORT.benchmark || [];
+  if (benchmark.length) {
+    const tested = benchmark.filter(b => b.verdict !== "NOT IN SCREEN");
+    const passing = tested.filter(b => b.verdict === "PASSES ALL GATES");
+    const fnr = tested.length ? (1 - passing.length / tested.length) : 0;
+    const rows = tested.map(b => ({
+      label: b.gene,
+      value: Math.max(0.01, -Number(b.cohens_d)),
+      valueLabel: String(b.verdict).replace("fails ", ""),
+      color: b.verdict === "PASSES ALL GATES" ? "var(--good)" : "var(--axis)",
+      tip: `<b>${esc(b.gene)}</b><br>Δ ${fmt(b.effect_difference,3)} · d ${fmt(b.cohens_d,2)} · q ${fmt(b.q_value,3)}<br>` +
+           `${esc(String(b.verdict))}<br>임상약물 ${b.n_clinical_drugs}개 ${esc(String(b.best_drug || ""))}<br>` +
+           `<i>${esc(String(b.known_for || ""))}</i>`,
+    }));
+    const nodes = [
+      html(`<div class="callout" style="border-left-color:var(--crit)"><div class="h" style="color:var(--crit)">위음성률 ${(fnr*100).toFixed(0)}%</div>
+        <p>알려진 KRAS 취약점 <b>${tested.length}개 중 ${passing.length}개</b>만 이 cascade를 통과합니다.
+        이것은 유전자에 대한 판정이 아니라 <b>게이트에 대한 판정</b>입니다 — 벤치마크는 이미 확립된 생물학이므로,
+        높은 위음성률은 cascade가 재현율을 희생해 정밀도에 맞춰져 있다는 뜻입니다.</p></div>`),
+      figure(barChart(rows, { tickDigits: 1, labelWidth: 90, valueWidth: 150 }),
+        "막대는 |Cohen's d|, 우측은 처음 탈락한 게이트. 막대에 올리면 통계·약물·확립된 역할이 보입니다.", ""),
+      html(`<div class="tablewrap"><table><thead><tr><th>Gene</th><th>Δ</th><th>d</th><th>q</th>
+        <th>%mut dep</th><th>%all dep</th><th>첫 탈락 게이트</th><th>임상약물</th><th>활성 시험</th></tr></thead><tbody>` +
+        tested.map(b => `<tr><td class="gene">${esc(b.gene)}</td><td>${fmt(b.effect_difference,3)}</td>
+          <td>${fmt(b.cohens_d,2)}</td><td>${fmt(b.q_value,3)}</td><td>${fmt(b.pct_mutant_dependent,0)}%</td>
+          <td>${fmt(b.pct_all_dependent,0)}%</td><td>${esc(String(b.verdict))}</td>
+          <td>${b.n_clinical_drugs}${b.best_drug ? " · " + esc(String(b.best_drug)) : ""}</td>
+          <td>${b.n_active_trials || 0}</td></tr>`).join("") + `</tbody></table></div>`),
+    ];
+    stage("06", "done", "벤치마크 감사 — 이 cascade는 무엇을 놓치는가",
+      "후보가 2개 나왔을 때 그것이 <strong>정밀한 것인지 눈먼 것인지</strong>는 살아남은 후보만 봐서는 알 수 없습니다. " +
+      "그래서 이미 확립된 KRAS 취약점에 같은 게이트를 적용했습니다.", nodes);
+  }
+
   const combination = protocol.combination || [];
   if (combination.length) {
     const nodes3 = [html(`<div class="tablewrap"><table><thead><tr><th>Gene</th><th>Δ</th><th>d</th><th>q</th>
@@ -2673,7 +2727,7 @@ if (protocol) {
         <td>${c.refuting_pmids.length ? c.refuting_pmids.map(p => `<a href="https://pubmed.ncbi.nlm.nih.gov/${esc(p)}/" target="_blank" rel="noopener">${esc(p)}</a>`).join(" ") : "—"}</td>
         <td>${c.n_clinical ? `${c.n_clinical}개 · ${esc(c.best_drug)} [${esc(c.best_phase)}]` : "없음"}</td>
         <td>${esc(c.combination_pathway || "-")}</td></tr>`).join("") + `</tbody></table></div>`)];
-    stage("06", "done", "병용 후보 — 통계 기준 미달이나 문헌이 뒷받침하는 유전자",
+    stage("07", "done", "병용 후보 — 통계 기준 미달이나 문헌이 뒷받침하는 유전자",
       "q &lt; 0.15, Cohen's d &lt; −0.5, 문헌 점수 ≥ 70을 모두 만족하는 유전자입니다. " +
       "이들이 기대는 근거는 <strong>이 스크린이 아니라 다른 연구자들의 것</strong>이므로 발견이 아니라 병용 가설로 읽어야 합니다. " +
       "반박 PMID가 있는 후보는 작동 전에 그 논문부터 확인하세요.", nodes3);
@@ -2689,7 +2743,7 @@ if (protocol) {
     nodes4.push(html(`<div class="callout"><div class="h">읽는 법</div>
       <p>이웃을 저해하는 것은 <b>다른 노드를 때리는 것</b>이라 후보 자체의 검증이 되지 않습니다.
       경로 가설로는 쓸 수 있지만, 그 후보가 필요한지에 대한 직접 답은 여전히 녹아웃입니다.</p></div>`));
-    stage("07", "done", "약물 없는 후보 — 네트워크 이웃", "", nodes4);
+    stage("08", "done", "약물 없는 후보 — 네트워크 이웃", "", nodes4);
   }
 
   const panel = protocol.panel || [];
@@ -2707,7 +2761,7 @@ if (protocol) {
     ② <b>KO arm</b>: G12D PDO에서 allele 특이 sgRNA로 변이 대립유전자만 제거 → 효과가 <em>사라지는지</em>.
     ③ <b>약리학적 phenocopy arm</b>: 같은 PDO에 MRTX1133 처리 → 유전적 KO arm과 같은 방향이면 mutant KRAS 의존성이 이중 확인됩니다.
     세 arm이 일치해야 'G12D 의존적'이라 말할 수 있습니다 — KI만으로는 과발현 인공산물을, KO만으로는 적응 효과를 배제하지 못합니다.</p></div>`));
-  stage("08", "done", "오가노이드 녹아웃 패널",
+  stage("09", "done", "오가노이드 녹아웃 패널",
     "음성 대조를 <strong>예측이 낮게 평가한 유전자</strong>로 넣는 것이 핵심입니다. 상위 후보만 검증하면 " +
     "precision@k가 base rate와 같아져 '맞췄다'를 '우연보다 낫다'와 구분할 수 없습니다. " +
     "어세이 대조는 공통 필수 유전자로 전달·편집 효율을 확인합니다.", panelNodes);
@@ -2746,7 +2800,7 @@ if (protocol) {
       ② KO 패널에 <strong>예측이 낮게 평가한 유전자도 포함</strong>(없으면 precision@k가 base rate와 같아져 우연과 구분 불가),
       ③ 정상 췌장 오가노이드 대조군으로 치료 창(window) 확인.</p></div>`));
   }
-  stage("09", crispr.length || curves.length ? "done" : "pending", "오가노이드 기능 검증",
+  stage("10", crispr.length || curves.length ? "done" : "pending", "오가노이드 기능 검증",
     crispr.length || curves.length
       ? `측정된 오가노이드 데이터입니다. 약물 arm은 유전형군 간 AUC/IC50 비교로, CRISPR arm은 각 오가노이드 자신의 비표적 대조 대비 log2FC로 평가하며, <strong>두 유전형 모두에서 죽는 유전자는 공통 필수</strong>로 분류되어 합성치사 근거가 되지 못합니다.`
       : `파이프라인의 예측 단계는 완료됐고, 이 단계는 실험 데이터를 기다립니다. 측정값이 들어오면 동일한 리포트에 자동으로 채워집니다.`,
@@ -2772,14 +2826,29 @@ if (protocol) {
       <p>예측과 실험을 맞대는 단계입니다. <code>compare_prediction_with_experiment</code>가 반증된 예측 → 확인된 예측 → 예측이 놓친 적중 순으로 보고하고,
       precision@k를 permutation null에 대해 검정한 뒤 PREDICTIVE / WEAK / NOT PREDICTIVE 판정을 냅니다. 이 판정이 연구 질문에 대한 답입니다.</p></div>`));
   }
-  stage("10", concordance.length ? "done" : "pending", "예측 vs 실험 — 연구 질문에 대한 답",
+  stage("11", concordance.length ? "done" : "pending", "예측 vs 실험 — 연구 질문에 대한 답",
     concordance.length ? "예측 순위와 측정값의 일치도입니다." : "실험 데이터가 들어오면 이 섹션이 연구 질문에 직접 답합니다.", nodes);
 }
 
 const gaps = [];
 if (!(REPORT.biovalidation || []).length) gaps.push("생물학적 검증 미실행");
-gaps.push("Sanger Project SCORE 독립 복제 미실행 — 데이터 레이크에 없어 현재 후보는 단일 스크린 유래입니다");
-gaps.push("AlphaFold pocket quality 미산출 — pocket detector(fpocket 등)가 없어 pLDDT(모델 신뢰도)로 대체했습니다");
+const bench = REPORT.benchmark || [];
+if (bench.length) {
+  const tested = bench.filter(b => b.verdict !== "NOT IN SCREEN");
+  const passing = tested.filter(b => b.verdict === "PASSES ALL GATES");
+  gaps.push(`벤치마크 위음성률 ${(100*(1-passing.length/Math.max(tested.length,1))).toFixed(0)}% — ` +
+    `알려진 KRAS 취약점 ${tested.length}개 중 ${passing.length}개만 통과합니다. 후보 목록은 재현율이 아니라 정밀도에 맞춰져 있습니다`);
+}
+if (!(REPORT.biovalidation || []).some(b => b.sanger_verdict && b.sanger_verdict !== "no data"))
+  gaps.push("Sanger Project SCORE 독립 복제 미실행 — 현재 후보는 단일 스크린 유래입니다");
+if (!(REPORT.biovalidation || []).some(b => b.prism_selective_drugs !== undefined))
+  gaps.push("PRISM 약물 민감도 데이터 없음");
+else
+  gaps.push("PRISM 라이브러리에 없는 화합물(예: 2-deoxyglucose)은 민감도 검증 자체가 불가능합니다");
+if (!(REPORT.biovalidation || []).some(b => b.fpocket_verdict && b.fpocket_verdict !== "no data"))
+  gaps.push("fpocket 포켓 분석 미실행 — pLDDT(모델 신뢰도)만으로는 포켓 품질을 말할 수 없습니다");
+else
+  gaps.push("fpocket 점수는 구조 하나에서 계산됩니다 — 최고 포켓이 보조인자가 이미 차지한 자리인지(RAB10은 GTP 자리) 리간드와 인터페이스를 직접 확인해야 합니다");
 if ((REPORT.biovalidation || []).some(b => !b.chembl_class)) gaps.push("ChEMBL target class 일부 미확보 — API 장애 시점의 공백입니다");
 gaps.push("야생형 대조군은 유전형만 야생형이며 NF1 결손·BRAF·RTK 증폭으로 RAS 경로가 켜진 세포주를 포함합니다");
 gaps.push("TCGA 생존은 bulk 종양의 연관이라 기질 기여를 분리하지 못하며, 필요성의 증거가 아닙니다");
@@ -3984,6 +4053,12 @@ def validate_candidates_biologically(
     max_neighbours: int = 15,
     include_survival: bool = True,
     include_structure: bool = True,
+    include_gtex: bool = True,
+    include_trials: bool = True,
+    include_sanger: bool = True,
+    include_pockets: bool = True,
+    include_prism: bool = True,
+    structure_paths: dict | None = None,
     output_csv_path: str | None = None,
 ) -> str:
     """Run the biological validation battery on candidate genes, one evidence axis at a time.
@@ -4018,6 +4093,23 @@ def validate_candidates_biologically(
         Run the TCGA PAAD log-rank test (default: True; needs cBioPortal).
     include_structure : bool, optional
         Fetch AlphaFold model confidence (default: True; needs UniProt and AlphaFold DB).
+    include_gtex : bool, optional
+        Report median GTEx expression in normal pancreas and flag toxicity risk above 50 TPM.
+    include_trials : bool, optional
+        Query ClinicalTrials.gov for active Phase 1-3 trials in a pancreatic/KRAS context.
+    include_sanger : bool, optional
+        Replicate the genotype contrast in the Sanger Project Score screen (default: True; needs
+        Sanger_ProjectScore_corrected_logFC.parquet in the data lake).
+    include_pockets : bool, optional
+        Run fpocket for a real binding-pocket druggability score (default: True; needs an fpocket
+        binary). Without ``structure_paths`` the AlphaFold model is used, which carries no ligands
+        or partners and therefore cannot tell an orthosteric cofactor site from a novel pocket.
+    include_prism : bool, optional
+        Test each candidate's drugs and druggable neighbours for allele-selective sensitivity in the
+        PRISM repurposing screen (default: True; needs PRISM_secondary_dose_response.csv).
+    structure_paths : dict, optional
+        Gene to experimental PDB path, e.g. {"RAB10": "9G0C_RAB10.pdb"}. Preferred over AlphaFold
+        whenever an experimental structure of the right chain is available.
     output_csv_path : str, optional
         Write the per-candidate table to this CSV path.
 
@@ -4057,6 +4149,16 @@ def validate_candidates_biologically(
         f"Run at {datetime.now(tz=_UTC).strftime('%Y-%m-%d %H:%M UTC')}",
         "=" * 78,
     ]
+    sanger = sanger_replication(genes, driver_gene, allele, data_lake_path) if include_sanger else {"status": "skipped"}
+    if include_sanger:
+        if sanger.get("status") == "computed":
+            log.append("")
+            log.append(f"Sanger Project Score cohort: {sanger['n_allele']} {allele} vs "
+                       f"{sanger['n_wildtype']} {driver_gene.upper()} wild-type lines (independent screen)")
+        else:
+            log.append("")
+            log.append(f"Sanger replication: not available ({sanger.get('note', sanger.get('status'))})")
+
     rows, neighbour_options = [], {}
     for gene in genes:
         log.append("")
@@ -4105,6 +4207,63 @@ def validate_candidates_biologically(
             else:
                 log.append(f"  Druggable STRING neighbours (score >= {string_min_score}): none found")
 
+        replication = (sanger.get("genes", {}) or {}).get(gene, {}) if include_sanger else {}
+        if replication.get("status") == "computed":
+            log.append(
+                f"  Sanger replication: d={replication['cohens_d']:.2f} (Δ={replication['delta']:+.3f}, "
+                f"n={replication['n_a']}v{replication['n_b']}) - {replication['verdict']}"
+            )
+        elif include_sanger:
+            log.append(f"  Sanger replication: {replication.get('status', 'not available')}")
+
+        gtex = _gtex_pancreas_tpm(gene, data_lake_path) if include_gtex else {"status": "skipped"}
+        if gtex.get("status") == "computed":
+            marker = "  *** TOXICITY FLAG ***" if gtex["toxicity_flag"] else ""
+            log.append(f"  GTEx normal pancreas: {gtex['median_tpm']} TPM{marker} - {gtex['note']}")
+        elif include_gtex:
+            log.append(f"  GTEx normal pancreas: not available ({gtex.get('note', gtex.get('status'))})")
+
+        trials = _clinical_trials(gene) if include_trials else []
+        if include_trials:
+            if trials:
+                log.append(f"  Active trials ({len(trials)}): " + "; ".join(
+                    f"{t['nct_id']} {t['phase']} [{t['sponsor'][:28]}] {t['interventions'][:40]}" for t in trials[:3]))
+            else:
+                log.append("  Active trials: none matching gene + pancreatic/KRAS context")
+
+        pockets = (
+            _fpocket_druggability(gene, (structure_paths or {}).get(gene.upper()))
+            if include_pockets else {"status": "skipped"}
+        )
+        if pockets.get("status") == "computed":
+            coherence = "" if pockets["coherent"] else "  (fpocket 자체 Score 음수 - 큰 공동이지만 형태는 나쁨)"
+            log.append(
+                f"  fpocket druggability: {pockets['best_druggability']:.3f} (pocket {pockets['best_pocket']}, "
+                f"{pockets['best_volume']:.0f} A^3, {pockets['n_pockets']} pockets) - {pockets['verdict']}{coherence}"
+            )
+            log.append(f"    structure: {pockets['structure_source']}")
+        elif include_pockets:
+            log.append(f"  fpocket druggability: not available ({pockets.get('note', pockets.get('status'))})")
+
+        prism_targets = [d["drug"] for d in direct[:3]] + [n["drug"] for n in neighbours[:3]]
+        prism = prism_allele_sensitivity(prism_targets, driver_gene, allele, data_lake_path, mutation_csv_path) \
+            if (include_prism and prism_targets) else {"status": "skipped"}
+        prism_hits = []
+        if prism.get("status") == "computed":
+            for drug, record in prism["drugs"].items():
+                if record.get("status") != "computed":
+                    log.append(f"  PRISM {drug}: {record.get('status')}")
+                    continue
+                log.append(
+                    f"  PRISM {drug}: AUC {record['mean_auc_allele']:.3f} ({allele}) vs "
+                    f"{record['mean_auc_wildtype']:.3f} (WT), delta={record['delta_auc']:+.3f}, "
+                    f"p={record['p_value']:.3f} - {record['verdict']}"
+                )
+                if record["verdict"].startswith("SELECTIVE"):
+                    prism_hits.append(drug)
+        elif include_prism and prism_targets:
+            log.append(f"  PRISM: not available ({prism.get('note', prism.get('status'))})")
+
         target_class = _chembl_target_class(gene)
         log.append(f"  ChEMBL target class: {target_class.get('protein_class') or target_class.get('status')}")
         structure = _alphafold_confidence(gene) if include_structure else {"status": "skipped"}
@@ -4126,18 +4285,33 @@ def validate_candidates_biologically(
             "druggable_neighbours": "; ".join(f"{n['neighbour']}:{n['drug']}" for n in neighbours),
             "chembl_class": target_class.get("protein_class", ""),
             "mean_plddt": structure.get("mean_plddt", np.nan),
+            "sanger_d": replication.get("cohens_d", np.nan),
+            "sanger_verdict": replication.get("verdict", "no data"),
+            "gtex_pancreas_tpm": gtex.get("median_tpm", np.nan),
+            "gtex_toxicity_flag": bool(gtex.get("toxicity_flag", False)),
+            "n_active_trials": len(trials),
+            "top_trial": f"{trials[0]['nct_id']} ({trials[0]['phase']})" if trials else "",
+            "fpocket_druggability": pockets.get("best_druggability", np.nan),
+            "fpocket_verdict": pockets.get("verdict", "no data"),
+            "fpocket_volume": pockets.get("best_volume", np.nan),
+            "fpocket_coherent": pockets.get("coherent", None),
+            "prism_selective_drugs": "; ".join(prism_hits),
         })
 
     table = pd.DataFrame(rows)
     log.append("")
     log.append("SUMMARY")
-    log.append(f"{'gene':<10}{'PDAC d(WT)':>11}{'PDAC d(oth)':>12}{'axis':<30}{'TCGA OS':>14}{'drug':>8}")
-    log.append("-" * 86)
+    log.append(
+        f"{'gene':<10}{'PDAC d':>8}{'Sanger d':>10}{'replication':>16}{'GTEx':>7}"
+        f"{'TCGA OS':>16}{'pocket':>8}{'PRISM':>18}"
+    )
+    log.append("-" * 96)
     for _, row in table.iterrows():
         log.append(
-            f"{row['gene']:<10}{row['pdac_d_vs_wt']:>11.2f}{row['pdac_d_vs_other']:>12.2f}"
-            f"{(row['kras_axis'] or '-'):<30}{row['tcga_survival']:>14}"
-            f"{(str(row['n_clinical_inhibitors']) + ' clin' if row['n_clinical_inhibitors'] else 'none'):>8}"
+            f"{row['gene']:<10}{row['pdac_d_vs_other']:>8.2f}{row['sanger_d']:>10.2f}"
+            f"{row['sanger_verdict']:>16}{row['gtex_pancreas_tpm']:>7.1f}{row['tcga_survival']:>16}"
+            f"{row['fpocket_druggability']:>8.3f}"
+            f"{(row['prism_selective_drugs'] or 'none'):>18}"
         )
 
     no_drug = [g for g, n in neighbour_options.items() if n]
@@ -4164,8 +4338,27 @@ def validate_candidates_biologically(
         f"  - KRAS effector axis assignments are curated as of {KRAS_AXIS_AS_OF}, not derived from this screen."
     )
     log.append(
-        "  - Mean pLDDT is AlphaFold's own confidence, NOT pocket quality. A pocket-quality score requires a "
-        "pocket detector (fpocket, PocketMiner) over the structure, which is not available here."
+        "  - fpocket's druggability score is computed on one structure. On an AlphaFold model there are no "
+        "ligands and no partners, so a score cannot distinguish a novel pocket from an orthosteric site that a "
+        "cofactor already occupies, nor from an interface that only exists because a partner is absent. Supply "
+        "an experimental structure through `structure_paths` whenever one exists, and check the top pocket "
+        "against the bound ligands and the interface before believing it."
+    )
+    log.append(
+        "  - A high druggability score with a negative fpocket Score is a large but poorly formed cavity; the two "
+        "numbers disagree and the pocket deserves inspection rather than a verdict."
+    )
+    log.append(
+        "  - Sanger replication uses log fold changes, not Chronos gene effect, so its effect sizes are on a "
+        "different scale than DepMap's. Direction and relative magnitude are comparable; the absolute value is not."
+    )
+    log.append(
+        "  - A GTEx flag is about the normal organ, not about on-target toxicity in a patient: expression is "
+        "necessary for toxicity, not sufficient."
+    )
+    log.append(
+        "  - ClinicalTrials.gov matches are keyword hits on the gene symbol in a pancreatic/KRAS context; some "
+        "will mention the gene without targeting it. Open the records before citing them."
     )
 
     if output_csv_path:
@@ -4173,3 +4366,555 @@ def validate_candidates_biologically(
         table.to_csv(output_csv_path, index=False)
         log.append(f"  Table written to {output_csv_path}")
     return "\n".join(log)
+
+
+# ---------------------------------------------------------------------------
+# Safety, trials and independent replication
+# ---------------------------------------------------------------------------
+CLINICAL_TRIALS_API = "https://clinicaltrials.gov/api/v2/studies"
+GTEX_TOXICITY_TPM = 50.0
+ACTIVE_TRIAL_STATUSES = ("RECRUITING", "ACTIVE_NOT_RECRUITING", "NOT_YET_RECRUITING", "ENROLLING_BY_INVITATION")
+
+_GTEX_CACHE: dict = {}
+
+
+def _gtex_pancreas_tpm(gene: str, data_lake_path: str | None = None, tissue: str = "Pancreas") -> dict:
+    """Median GTEx TPM of ``gene`` in normal tissue, with a toxicity flag.
+
+    High expression in the normal counterpart organ does not rule a target out, but it means the
+    therapeutic window has to be demonstrated rather than assumed - which is why this flags instead
+    of excluding.
+    """
+    import pandas as pd
+
+    resolved = _resolve_data_lake(data_lake_path)
+    if resolved not in _GTEX_CACHE:
+        path = os.path.join(resolved, "gtex_tissue_gene_tpm.parquet")
+        if not os.path.exists(path):
+            _GTEX_CACHE[resolved] = None
+        else:
+            frame = pd.read_parquet(path)
+            frame["Gene"] = frame["Gene"].astype(str).str.upper()
+            _GTEX_CACHE[resolved] = frame
+    table = _GTEX_CACHE[resolved]
+    if table is None:
+        return {"status": "unavailable", "note": "gtex_tissue_gene_tpm.parquet not in the data lake"}
+
+    rows = table[(table["Gene"] == gene.strip().upper()) & (table["Tissue"] == tissue)]
+    if len(rows) == 0:
+        return {"status": "not found", "tissue": tissue}
+    tpm = float(rows["Expression"].median())
+    return {
+        "status": "computed",
+        "tissue": tissue,
+        "median_tpm": round(tpm, 2),
+        "toxicity_flag": tpm > GTEX_TOXICITY_TPM,
+        "note": (
+            f"HIGH NORMAL EXPRESSION ({tpm:.0f} TPM > {GTEX_TOXICITY_TPM:.0f}) - therapeutic window evidence "
+            "required before advancing"
+            if tpm > GTEX_TOXICITY_TPM
+            else f"{tpm:.1f} TPM in normal {tissue.lower()}; below the {GTEX_TOXICITY_TPM:.0f} TPM flag"
+        ),
+    }
+
+
+def _clinical_trials(gene: str, context_terms: str = "pancreatic OR KRAS", limit: int = 5) -> list:
+    """Active Phase 1-3 trials mentioning ``gene`` in a pancreatic/KRAS context."""
+    payload = _http_get(
+        CLINICAL_TRIALS_API,
+        params={
+            "query.term": f"{gene} AND ({context_terms})",
+            "filter.overallStatus": "|".join(ACTIVE_TRIAL_STATUSES),
+            "pageSize": limit,
+            "fields": "NCTId,BriefTitle,Phase,OverallStatus,LeadSponsorName,InterventionName",
+        },
+        timeout=45, retries=2,
+    )
+    if not payload:
+        return []
+    trials = []
+    for study in payload.get("studies", []):
+        section = study.get("protocolSection", {})
+        design = section.get("designModule", {})
+        phases = design.get("phases", [])
+        if not any(p in ("PHASE1", "PHASE2", "PHASE3") for p in phases):
+            continue
+        arms = section.get("armsInterventionsModule", {}).get("interventions", [])
+        trials.append({
+            "nct_id": section.get("identificationModule", {}).get("nctId", ""),
+            "title": section.get("identificationModule", {}).get("briefTitle", ""),
+            "phase": "/".join(p.replace("PHASE", "Phase ") for p in phases),
+            "status": section.get("statusModule", {}).get("overallStatus", ""),
+            "sponsor": section.get("sponsorCollaboratorsModule", {}).get("leadSponsor", {}).get("name", ""),
+            "interventions": ", ".join(i.get("name", "") for i in arms[:4]),
+        })
+    return trials
+
+
+# Known KRAS vulnerabilities used to calibrate the pipeline's false-negative rate. Each note says
+# what the gene is established as, so a miss can be read as "the design cannot see this" rather than
+# "the gene is not real". CURATED PRIOR KNOWLEDGE, dated.
+KRAS_BENCHMARK_GENES = {
+    "SOS1": "RAS-GEF; SOS1 inhibitors are in trials explicitly as KRAS-inhibitor combination partners.",
+    "EGFR": "Upstream RTK; EGFR re-activation is the canonical adaptive resistance route to KRAS inhibition.",
+    "CDK4": "Cell-cycle re-entry downstream of RAS-MAPK; CDK4/6 inhibitors are launched drugs.",
+    "CDK6": "Partner of CDK4 in the same complex; usually redundant with it in cell-line screens.",
+    "PRMT5": "MTA-cooperative vulnerability of MTAP-deleted tumours, which co-occurs with CDKN2A loss in PDAC.",
+    "TEAD1": "YAP/TAZ-TEAD transcription is the best-documented KRAS-independence bypass.",
+    "YAP1": "Co-activator of TEAD; the same bypass axis, usually redundant with its paralog WWTR1.",
+    "RAF1": "Direct RAS effector; vertical pathway inhibition is a standard combination rationale.",
+    "AURKA": "Mitotic kinase reported as a KRAS-mutant vulnerability, with repeated non-replication reports.",
+    "WEE1": "G2/M checkpoint kinase; a replication-stress vulnerability rather than a direct KRAS partner.",
+}
+KRAS_BENCHMARK_AS_OF = "2026-10"
+
+
+def benchmark_known_vulnerabilities(
+    scan_csv_path: str,
+    benchmark_genes=None,
+    q_threshold: float = 0.05,
+    min_cohens_d: float = -0.8,
+    min_pct_mutant: float = 30.0,
+    max_pct_all: float = 50.0,
+    data_lake_path: str | None = None,
+    include_trials: bool = False,
+    output_csv_path: str | None = None,
+) -> str:
+    """Audit the filter cascade against known KRAS vulnerabilities to estimate its false-negative rate.
+
+    A cascade that returns two genes is either very precise or very blind, and the difference cannot
+    be read off the surviving candidates. This runs the same gates over a curated list of
+    vulnerabilities that are already established, and reports the FIRST gate each one fails. The
+    result is a calibration statement about the design, not a claim about the genes: a gate that
+    rejects most of the known biology is set too tight for this cohort, whatever its candidates look
+    like.
+
+    Parameters
+    ----------
+    scan_csv_path : str
+        Scan table from a discovery run (needs gene, effect_difference, cohens_d, q_value,
+        pct_a_dependent, pct_all_dependent, pan_essential).
+    benchmark_genes : list[str] | str, optional
+        Genes to audit. Defaults to the curated KRAS benchmark set.
+    q_threshold, min_cohens_d, min_pct_mutant, max_pct_all : optional
+        The same gates the main cascade uses.
+    data_lake_path : str, optional
+        Directory holding the drug tables.
+    include_trials : bool, optional
+        Also query ClinicalTrials.gov per gene (default: False; slower).
+    output_csv_path : str, optional
+        Write the audit table to this CSV path.
+
+    Returns
+    -------
+    str
+        A per-gene audit with the first failing gate, drug status, and a false-negative rate estimate.
+
+    """
+    import pandas as pd
+
+    frame = _read_optional_csv(scan_csv_path)
+    if frame is None:
+        return f"FAILURE: {scan_csv_path} not found."
+    genes = _parse_gene_list(benchmark_genes) or list(KRAS_BENCHMARK_GENES)
+    hub = _load_repurposing_hub(data_lake_path)
+    hub_table = hub["table"] if hub is not None else None
+
+    log = [
+        "=" * 78,
+        f"BENCHMARK AUDIT - {len(genes)} known KRAS vulnerabilities against the same cascade",
+        f"Run at {datetime.now(tz=_UTC).strftime('%Y-%m-%d %H:%M UTC')}",
+        "=" * 78,
+        "",
+        f"Gates: q < {q_threshold} | d < {min_cohens_d} | %mut dep > {min_pct_mutant} | "
+        f"%all dep < {max_pct_all} | not pan-essential",
+        "",
+    ]
+    rows = []
+    for gene in genes:
+        match = frame[frame["gene"].astype(str).str.upper() == gene.upper()]
+        if len(match) == 0:
+            rows.append({"gene": gene, "verdict": "NOT IN SCREEN", "failed_gate": "not tested"})
+            log.append(f"### {gene}: not present in the screen table")
+            continue
+        row = match.iloc[0]
+        gates = [
+            ("Step 1 q", row["q_value"] < q_threshold, f"q={row['q_value']:.3f}"),
+            ("Step 2 Cohen's d", row["cohens_d"] < min_cohens_d, f"d={row['cohens_d']:.2f}"),
+            ("Step 3 %mutant dep", row["pct_a_dependent"] > min_pct_mutant, f"{row['pct_a_dependent']:.0f}%"),
+            ("Step 4 %all dep", row["pct_all_dependent"] < max_pct_all, f"{row['pct_all_dependent']:.0f}%"),
+            ("Step 5 pan-essential", not bool(row["pan_essential"]), "pan-essential" if row["pan_essential"] else "no"),
+        ]
+        failed = [(name, detail) for name, passed, detail in gates if not passed]
+        first_failed = failed[0] if failed else None
+
+        drugs = _drugs_from_curated(gene)
+        if hub_table is not None:
+            drugs += hub_table[hub_table["gene"] == gene].to_dict("records")
+        inhibitors = [d for d in drugs if _is_inhibitory(d.get("moa", ""))]
+        clinical = [d for d in inhibitors if d["phase_rank"] >= 2]
+        best = max(clinical, key=lambda d: d["phase_rank"]) if clinical else None
+
+        trials = _clinical_trials(gene) if include_trials else []
+        rows.append({
+            "gene": gene,
+            "effect_difference": float(row["effect_difference"]),
+            "cohens_d": float(row["cohens_d"]),
+            "q_value": float(row["q_value"]),
+            "pct_mutant_dependent": float(row["pct_a_dependent"]),
+            "pct_all_dependent": float(row["pct_all_dependent"]),
+            "pan_essential": bool(row["pan_essential"]),
+            "verdict": "PASSES ALL GATES" if not failed else f"fails {first_failed[0]} ({first_failed[1]})",
+            "failed_gate": "" if not failed else first_failed[0],
+            "n_failed_gates": len(failed),
+            "best_drug": best["drug"] if best else "",
+            "best_phase": best["clinical_phase"] if best else "",
+            "n_clinical_drugs": len(clinical),
+            "n_active_trials": len(trials),
+            "known_for": KRAS_BENCHMARK_GENES.get(gene, ""),
+        })
+
+        log.append(f"### {gene}")
+        log.append(
+            f"  Δ={row['effect_difference']:+.3f}  d={row['cohens_d']:.2f}  q={row['q_value']:.4f}  "
+            f"%mut dep={row['pct_a_dependent']:.0f}%  %all dep={row['pct_all_dependent']:.0f}%"
+        )
+        log.append(f"  Verdict: {rows[-1]['verdict']}" + (f"  (also fails: {', '.join(n for n, _ in failed[1:])})" if len(failed) > 1 else ""))
+        log.append(f"  Drugs: {len(clinical)} clinical" + (f" - {best['drug']} [{best['clinical_phase']}]" if best else " - none"))
+        if trials:
+            log.append("  Active trials: " + "; ".join(f"{t['nct_id']} ({t['phase']})" for t in trials[:3]))
+        log.append(f"  Established as: {KRAS_BENCHMARK_GENES.get(gene, 'n/a')}")
+        log.append("")
+
+    table = pd.DataFrame(rows)
+    tested = table[table["verdict"] != "NOT IN SCREEN"]
+    passed = tested[tested["verdict"] == "PASSES ALL GATES"]
+    log.append("CALIBRATION")
+    log.append(f"  Known vulnerabilities audited: {len(tested)}")
+    log.append(f"  Passing the full cascade: {len(passed)} ({', '.join(passed['gene']) or 'none'})")
+    log.append(
+        f"  Estimated false-negative rate on this benchmark: {1 - len(passed) / max(len(tested), 1):.0%}"
+    )
+    if len(tested):
+        by_gate = tested[tested["failed_gate"] != ""]["failed_gate"].value_counts().to_dict()
+        log.append(f"  First gate that rejects them: {by_gate}")
+        log.append(
+            "  Read this as a property of the gates, not of the genes: the benchmark set is established "
+            "biology, so a high rate here means the cascade is tuned for precision at the cost of recall."
+        )
+    log.append("")
+    log.append("QC WARNINGS")
+    log.append(
+        f"  - The benchmark list is curated as of {KRAS_BENCHMARK_AS_OF} and is not exhaustive; the rate it "
+        "gives is an estimate over ten genes, not a measured recall."
+    )
+    log.append(
+        "  - Several benchmark genes are redundant with a paralog (CDK4/CDK6, YAP1/WWTR1, TEAD1-4). A single "
+        "knockout cannot reveal a dependency that a paralog covers, so those are expected misses in any "
+        "single-gene screen."
+    )
+    if output_csv_path:
+        os.makedirs(os.path.dirname(os.path.abspath(output_csv_path)), exist_ok=True)
+        table.to_csv(output_csv_path, index=False)
+        log.append(f"  Audit table written to {output_csv_path}")
+    return "\n".join(log)
+
+
+_SANGER_CACHE: dict = {}
+
+
+def _load_sanger(data_lake_path: str | None = None):
+    """Sanger Project Score CRISPRcleaned log fold changes (genes x cell lines)."""
+    import pandas as pd
+
+    resolved = _resolve_data_lake(data_lake_path)
+    if resolved in _SANGER_CACHE:
+        return _SANGER_CACHE[resolved]
+    path = os.path.join(resolved, "Sanger_ProjectScore_corrected_logFC.parquet")
+    if not os.path.exists(path):
+        _SANGER_CACHE[resolved] = None
+        return None
+    frame = pd.read_parquet(path)
+    bundle = {
+        "logfc": frame,
+        "path": path,
+        "normalised_columns": {_normalize_cell_line_name(c): c for c in frame.columns},
+    }
+    _SANGER_CACHE[resolved] = bundle
+    return bundle
+
+
+def sanger_replication(
+    genes,
+    driver_gene: str = "KRAS",
+    allele: str = "G12D",
+    data_lake_path: str | None = None,
+    min_group_size: int = 3,
+    replication_d_threshold: float = -0.3,
+) -> dict:
+    """Independent replication of a genotype contrast in the Sanger Project Score screen.
+
+    An independent screen is the only check here that is not a different cut of the same data: it has
+    its own library, its own cell lines and its own analysis pipeline, so a hit that survives it is
+    not a Broad-specific artefact. Genotype calls come from the same cBioPortal source used
+    throughout, matched to Sanger's cell line names.
+
+    Returns ``{gene: {...}}`` with the Sanger effect size and a REPLICATED / NOT REPLICATED verdict,
+    or ``{"status": "unavailable"}`` when the Sanger matrix is not in the data lake.
+    """
+    import numpy as np
+
+    bundle = _load_sanger(data_lake_path)
+    if bundle is None:
+        return {"status": "unavailable",
+                "note": "Sanger_ProjectScore_corrected_logFC.parquet is not in the data lake"}
+
+    annotation = _mutation_status_from_cbioportal(driver_gene.upper())
+    if annotation is None:
+        return {"status": "unavailable", "note": "genotype calls could not be fetched"}
+
+    columns = bundle["normalised_columns"]
+    allele_columns, wildtype_columns = [], []
+    for key, column in columns.items():
+        variants = annotation["mutant_variants"].get(key)
+        if variants is not None:
+            if allele.upper() in variants.upper():
+                allele_columns.append(column)
+        elif key in annotation["profiled_models"]:
+            wildtype_columns.append(column)
+
+    if len(allele_columns) < min_group_size or len(wildtype_columns) < min_group_size:
+        return {"status": "unavailable",
+                "note": f"Sanger cohort too small ({len(allele_columns)} {allele} vs "
+                        f"{len(wildtype_columns)} wild-type) after name matching"}
+
+    frame = bundle["logfc"]
+    results = {"status": "computed", "n_allele": len(allele_columns), "n_wildtype": len(wildtype_columns),
+               "allele_lines": list(allele_columns), "genes": {}}
+    for gene in _parse_gene_list(genes):
+        if gene not in frame.index:
+            results["genes"][gene] = {"status": "not in Sanger library"}
+            continue
+        row = frame.loc[gene]
+        a = row[allele_columns].dropna().astype(float)
+        b = row[wildtype_columns].dropna().astype(float)
+        if len(a) < min_group_size or len(b) < min_group_size:
+            results["genes"][gene] = {"status": "too few measurements"}
+            continue
+        pooled = np.sqrt((a.std(ddof=1) ** 2 + b.std(ddof=1) ** 2) / 2)
+        cohens_d = float((a.mean() - b.mean()) / pooled) if pooled > 0 else np.nan
+        replicated = np.isfinite(cohens_d) and cohens_d < replication_d_threshold
+        results["genes"][gene] = {
+            "status": "computed",
+            "mean_allele": float(a.mean()),
+            "mean_wildtype": float(b.mean()),
+            "delta": float(a.mean() - b.mean()),
+            "cohens_d": cohens_d,
+            "n_a": len(a), "n_b": len(b),
+            "verdict": "REPLICATED" if replicated else "NOT REPLICATED",
+        }
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Structure-based druggability (fpocket) and PRISM drug sensitivity
+# ---------------------------------------------------------------------------
+FPOCKET_CANDIDATES = (
+    "fpocket",
+    os.path.expanduser("~/pdac_sl_analysis/fpocket/bin/fpocket"),
+    "/usr/local/bin/fpocket",
+)
+DRUGGABLE_POCKET_THRESHOLD = 0.5
+
+_PRISM_CACHE: dict = {}
+
+
+def _find_fpocket() -> str | None:
+    """Locate an fpocket binary: PATH first, then the usual build locations."""
+    import shutil
+
+    for candidate in FPOCKET_CANDIDATES:
+        found = shutil.which(candidate) if os.sep not in candidate else (
+            candidate if os.access(candidate, os.X_OK) else None
+        )
+        if found:
+            return found
+    return None
+
+
+def _parse_fpocket_info(info_path: str) -> list:
+    """Parse an fpocket *_info.txt into pocket dicts, sorted by druggability."""
+    import re
+
+    text = open(info_path).read()
+    parts = re.split(r"Pocket\s+(\d+)\s*:", text)
+    pockets = []
+    for index in range(1, len(parts), 2):
+        number, body = int(parts[index]), parts[index + 1]
+
+        def field(name, body=body):
+            match = re.search(rf"{re.escape(name)}\s*:\s*([-\d.eE]+)", body)
+            return float(match.group(1)) if match else float("nan")
+
+        pockets.append({
+            "pocket": number,
+            "druggability": field("Druggability Score"),
+            "score": field("Score"),
+            "volume": field("Volume"),
+            "n_alpha_spheres": field("Number of Alpha Spheres"),
+        })
+    return sorted(pockets, key=lambda p: -p["druggability"])
+
+
+def _fpocket_druggability(
+    gene: str, structure_path: str | None = None, work_dir: str | None = None, top_n: int = 5
+) -> dict:
+    """Run fpocket on a structure for ``gene`` and return its best pockets.
+
+    With no ``structure_path`` the AlphaFold model is used. That is a prediction with no ligands and
+    no binding partners, so two things the experimental structure can tell you are simply absent:
+    whether the best pocket is an orthosteric site already occupied by a cofactor, and whether it is
+    an interface that only exists because a partner was deleted. Both are reported as unknown rather
+    than assumed away.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    binary = _find_fpocket()
+    if binary is None:
+        return {"status": "unavailable", "note": "fpocket binary not found (build it or add it to PATH)"}
+
+    source = "supplied structure"
+    temporary = None
+    if structure_path is None:
+        confidence = _alphafold_confidence(gene)
+        if confidence.get("status") != "computed":
+            return {"status": "unavailable", "note": f"no structure for {gene}: {confidence.get('note', '')}"}
+        prediction = _http_get(f"{ALPHAFOLD_API}/{confidence['uniprot']}", timeout=45, retries=2)
+        text = _http_get(prediction[0]["pdbUrl"], timeout=60, retries=1, as_json=False) if prediction else None
+        if not text:
+            return {"status": "unavailable", "note": "AlphaFold model could not be downloaded"}
+        temporary = tempfile.mkdtemp(prefix=f"fpocket_{gene}_")
+        structure_path = os.path.join(temporary, f"{gene}_af.pdb")
+        with open(structure_path, "w") as handle:
+            handle.write(text)
+        source = f"AlphaFold model {confidence['uniprot']} (predicted, no ligands or partners)"
+
+    work = work_dir or tempfile.mkdtemp(prefix=f"fpocket_run_{gene}_")
+    os.makedirs(work, exist_ok=True)
+    target = os.path.join(work, os.path.basename(structure_path))
+    if os.path.abspath(target) != os.path.abspath(structure_path):
+        shutil.copy(structure_path, target)
+
+    try:
+        subprocess.run([binary, "-f", target], capture_output=True, timeout=900, check=False)
+    except subprocess.TimeoutExpired:
+        return {"status": "unavailable", "note": "fpocket timed out"}
+
+    stem = os.path.splitext(os.path.basename(target))[0]
+    info_path = os.path.join(work, f"{stem}_out", f"{stem}_info.txt")
+    if not os.path.exists(info_path):
+        return {"status": "unavailable", "note": "fpocket produced no output"}
+
+    pockets = _parse_fpocket_info(info_path)
+    if temporary:
+        shutil.rmtree(temporary, ignore_errors=True)
+    if not pockets:
+        return {"status": "computed", "n_pockets": 0, "best_druggability": 0.0, "verdict": "NO POCKET FOUND"}
+
+    best = pockets[0]
+    return {
+        "status": "computed",
+        "structure_source": source,
+        "n_pockets": len(pockets),
+        "best_pocket": best["pocket"],
+        "best_druggability": best["druggability"],
+        "best_score": best["score"],
+        "best_volume": best["volume"],
+        "top_pockets": pockets[:top_n],
+        "verdict": ("DRUGGABLE POCKET" if best["druggability"] >= DRUGGABLE_POCKET_THRESHOLD
+                    else "NO DRUGGABLE POCKET"),
+        "coherent": best["score"] > 0,
+    }
+
+
+def _load_prism(data_lake_path: str | None = None):
+    """PRISM repurposing secondary screen dose-response parameters (AUC per cell line x drug)."""
+    import pandas as pd
+
+    resolved = _resolve_data_lake(data_lake_path)
+    if resolved in _PRISM_CACHE:
+        return _PRISM_CACHE[resolved]
+    path = os.path.join(resolved, "PRISM_secondary_dose_response.csv")
+    if not os.path.exists(path):
+        _PRISM_CACHE[resolved] = None
+        return None
+    frame = pd.read_csv(path, usecols=["depmap_id", "auc", "ic50", "name", "moa", "target", "phase"])
+    frame["name_lower"] = frame["name"].astype(str).str.lower()
+    bundle = {"table": frame, "path": path}
+    _PRISM_CACHE[resolved] = bundle
+    return bundle
+
+
+def prism_allele_sensitivity(
+    drug_names,
+    driver_gene: str = "KRAS",
+    allele: str = "G12D",
+    data_lake_path: str | None = None,
+    mutation_csv_path: str | None = None,
+    min_group_size: int = 3,
+) -> dict:
+    """Does a drug kill driver-allele cell lines preferentially, in the PRISM repurposing screen?
+
+    This is the arm the CRISPR data cannot supply: a knockout says the gene is required, a compound
+    says the molecule works. Lower area under the dose-response curve means more sensitive, so a
+    negative delta means the allele lines are preferentially killed.
+    """
+    import numpy as np
+    from scipy import stats
+
+    bundle = _load_prism(data_lake_path)
+    if bundle is None:
+        return {"status": "unavailable",
+                "note": "PRISM_secondary_dose_response.csv is not in the data lake"}
+    try:
+        depmap = _load_depmap(data_lake_path)
+        screened = depmap["model"][depmap["model"]["ModelID"].isin(depmap["gene_effect"].index)]
+        annotated, _ = _annotate_mutation_status(screened, driver_gene, depmap["data_lake_path"], mutation_csv_path)
+    except (FileNotFoundError, RuntimeError, ValueError) as e:
+        return {"status": "unavailable", "note": f"genotype calls unavailable: {e}"}
+
+    allele_ids, wildtype_ids, _ = _allele_groups(annotated, allele)
+    allele_ids, wildtype_ids = set(allele_ids), set(wildtype_ids)
+    table = bundle["table"]
+    results = {"status": "computed", "drugs": {},
+               "n_allele_in_prism": len(allele_ids & set(table["depmap_id"])),
+               "n_wildtype_in_prism": len(wildtype_ids & set(table["depmap_id"]))}
+
+    for drug in (drug_names if isinstance(drug_names, list) else [d.strip() for d in str(drug_names).split(",")]):
+        drug = drug.strip()
+        if not drug:
+            continue
+        subset = table[table["name_lower"] == drug.lower()]
+        if len(subset) == 0:
+            results["drugs"][drug] = {"status": "not in PRISM library"}
+            continue
+        a = subset[subset["depmap_id"].isin(allele_ids)]["auc"].dropna()
+        b = subset[subset["depmap_id"].isin(wildtype_ids)]["auc"].dropna()
+        if len(a) < min_group_size or len(b) < min_group_size:
+            results["drugs"][drug] = {"status": f"too few lines ({len(a)} vs {len(b)})"}
+            continue
+        _, p = stats.ttest_ind(a, b, equal_var=False)
+        delta = float(a.mean() - b.mean())
+        results["drugs"][drug] = {
+            "status": "computed",
+            "mean_auc_allele": float(a.mean()),
+            "mean_auc_wildtype": float(b.mean()),
+            "delta_auc": delta,
+            "p_value": float(p),
+            "n_a": len(a), "n_b": len(b),
+            "verdict": ("SELECTIVE for " + allele if (delta < 0 and p < 0.05)
+                        else "not selective" if np.isfinite(p) else "not testable"),
+        }
+    return results

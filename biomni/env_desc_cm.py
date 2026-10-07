@@ -70,6 +70,8 @@ data_lake_dict = {
     "sgRNA_KO_SP_human.txt": "sgRNA knockout data for human.",
     "synthetic_growth_defect.parquet": "Synthetic growth defects from genetic interactions.",
     "synthetic_lethality.parquet": "Synthetic lethal interactions from BioGRID. NOTE: S. cerevisiae only (1,909 pairs, 0 human) - not usable as human labels without orthology mapping.",
+    "PRISM_secondary_dose_response.csv": "DepMap PRISM repurposing secondary screen dose-response parameters: AUC, IC50, EC50 per cell line x drug for 1,448 compounds across 480 lines, with MOA and clinical phase. Keyed by depmap_id, so it joins directly to DepMap genotype calls.",
+    "Sanger_ProjectScore_corrected_logFC.parquet": "Sanger Project Score CRISPRcleaned depletion log fold changes, 17,995 genes x 324 cell lines. Independent replication cohort for DepMap hits; columns are cell line NAMES, not DepMap ModelIDs.",
     "synlethdb_human_sl.parquet": "Curated HUMAN synthetic lethal gene pairs from SynLethDB 2.0 (~36,000 pairs) with source-weighted confidence scores. Use as labelled positives for benchmarking or training SL predictors.",
     "synthetic_rescue.parquet": "Genetic interactions rescuing phenotypes.",
     "two-hybrid.parquet": "Protein-protein interactions detected by yeast two-hybrid assays.",

@@ -1,0 +1,27 @@
+driver,alteration,n_altered,n_control,n_unprofiled,altered_fraction,verdict,note
+TP53,mutation,36,8,3,0.8181818181818182,TESTABLE,both arms are large enough for a genome-wide contrast
+SMAD4,deletion,26,10,11,0.7222222222222222,TESTABLE,both arms are large enough for a genome-wide contrast
+CDKN2A,deletion,23,13,11,0.6388888888888888,TESTABLE,both arms are large enough for a genome-wide contrast
+SMAD4,mutation,11,33,3,0.25,TESTABLE,both arms are large enough for a genome-wide contrast
+CDKN2A,mutation,10,34,3,0.22727272727272727,TESTABLE,both arms are large enough for a genome-wide contrast
+ARID1A,mutation,10,34,3,0.22727272727272727,TESTABLE,both arms are large enough for a genome-wide contrast
+MYC,amplification,10,26,11,0.2777777777777778,TESTABLE,both arms are large enough for a genome-wide contrast
+KRAS,mutation,40,4,3,0.9090909090909091,UNDERPOWERED,both arms exist but the smaller is <8 lines; expect no gene to clear a genome-wide FDR
+RNF43,mutation,7,37,3,0.1590909090909091,UNDERPOWERED,both arms exist but the smaller is <8 lines; expect no gene to clear a genome-wide FDR
+KMT2C,mutation,7,37,3,0.1590909090909091,UNDERPOWERED,both arms exist but the smaller is <8 lines; expect no gene to clear a genome-wide FDR
+ATM,mutation,5,39,3,0.11363636363636363,UNDERPOWERED,both arms exist but the smaller is <8 lines; expect no gene to clear a genome-wide FDR
+TP53,deletion,5,31,11,0.1388888888888889,UNDERPOWERED,both arms exist but the smaller is <8 lines; expect no gene to clear a genome-wide FDR
+GATA6,amplification,4,32,11,0.1111111111111111,UNDERPOWERED,both arms exist but the smaller is <8 lines; expect no gene to clear a genome-wide FDR
+ERBB2,amplification,4,32,11,0.1111111111111111,UNDERPOWERED,both arms exist but the smaller is <8 lines; expect no gene to clear a genome-wide FDR
+KMT2D,mutation,3,41,3,0.06818181818181818,UNDERPOWERED,both arms exist but the smaller is <8 lines; expect no gene to clear a genome-wide FDR
+AKT2,amplification,3,33,11,0.08333333333333333,UNDERPOWERED,both arms exist but the smaller is <8 lines; expect no gene to clear a genome-wide FDR
+BRCA2,mutation,2,42,3,0.045454545454545456,UNTESTABLE,one arm has <3 lines - a within-PDAC contrast is impossible; use a pan-cancer cohort or an isogenic model instead
+PALB2,mutation,2,42,3,0.045454545454545456,UNTESTABLE,one arm has <3 lines - a within-PDAC contrast is impossible; use a pan-cancer cohort or an isogenic model instead
+CCNE1,amplification,2,34,11,0.05555555555555555,UNTESTABLE,one arm has <3 lines - a within-PDAC contrast is impossible; use a pan-cancer cohort or an isogenic model instead
+GNAS,mutation,1,43,3,0.022727272727272728,UNTESTABLE,one arm has <3 lines - a within-PDAC contrast is impossible; use a pan-cancer cohort or an isogenic model instead
+TGFBR2,mutation,1,43,3,0.022727272727272728,UNTESTABLE,one arm has <3 lines - a within-PDAC contrast is impossible; use a pan-cancer cohort or an isogenic model instead
+BRCA1,mutation,1,43,3,0.022727272727272728,UNTESTABLE,one arm has <3 lines - a within-PDAC contrast is impossible; use a pan-cancer cohort or an isogenic model instead
+STK11,mutation,1,43,3,0.022727272727272728,UNTESTABLE,one arm has <3 lines - a within-PDAC contrast is impossible; use a pan-cancer cohort or an isogenic model instead
+RBM10,mutation,1,43,3,0.022727272727272728,UNTESTABLE,one arm has <3 lines - a within-PDAC contrast is impossible; use a pan-cancer cohort or an isogenic model instead
+ACVR1B,mutation,0,44,3,0.0,UNTESTABLE,one arm has <3 lines - a within-PDAC contrast is impossible; use a pan-cancer cohort or an isogenic model instead
+KDM6A,mutation,0,44,3,0.0,UNTESTABLE,one arm has <3 lines - a within-PDAC contrast is impossible; use a pan-cancer cohort or an isogenic model instead

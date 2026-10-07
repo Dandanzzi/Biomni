@@ -1,0 +1,39 @@
+gene,drug,clinical_phase,moa,inhibitory,source,verdict,synlethdb
+SNRNP48,,,,False,,CRISPR-ONLY,
+ZC3H13,,,,False,,CRISPR-ONLY,"SynLethDB partner of KRAS (High Throughput, Text Mining)"
+DERL2,,,,False,,CRISPR-ONLY,
+RAB10,,,,False,,CRISPR-ONLY,
+TMEM199,,,,False,,CRISPR-ONLY,
+TMEM167A,,,,False,,CRISPR-ONLY,
+EFR3A,,,,False,,CRISPR-ONLY,
+DOCK5,,,,False,,CRISPR-ONLY,SynLethDB partner of KRAS (GenomeRNAi)
+HEATR3,,,,False,,CRISPR-ONLY,
+CYB5B,,,,False,,CRISPR-ONLY,
+CFLAR,,,,False,,CRISPR-ONLY,SynLethDB partner of KRAS (Text Mining)
+LIN9,,,,False,,CRISPR-ONLY,SynLethDB partner of KRAS (High Throughput)
+KRAS,sotorasib (AMG 510),Launched,KRAS G12C covalent inhibitor,True,curated RAS set (2026-10),CLINICAL-STAGE INHIBITOR,
+KRAS,adagrasib (MRTX849),Launched,KRAS G12C covalent inhibitor,True,curated RAS set (2026-10),CLINICAL-STAGE INHIBITOR,
+KRAS,SOTORASIB,Launched,GTPase KRas inhibitor,True,ChEMBL (CHEMBL4535757),CLINICAL-STAGE INHIBITOR,
+KRAS,ADAGRASIB,Launched,GTPase KRas inhibitor,True,ChEMBL (CHEMBL4594350),CLINICAL-STAGE INHIBITOR,
+WNK1,,,,False,,CRISPR-ONLY,
+DDX39B,,,,False,,CRISPR-ONLY,SynLethDB partner of KRAS (GenomeRNAi)
+KLF5,,,,False,,CRISPR-ONLY,
+C17ORF75,,,,False,,CRISPR-ONLY,
+SCAP,,,,False,,CRISPR-ONLY,SynLethDB partner of KRAS (High Throughput)
+CCND1,BRICICLIB,Phase 2,G1/S-specific cyclin D1 inhibitor,True,ChEMBL (CHEMBL1206245),CLINICAL-STAGE INHIBITOR,
+CCND1,briciclib,Phase 1,cyclin D inhibitor,True,Repurposing Hub,CLINICAL-STAGE INHIBITOR,
+CCND1,arcyriaflavin-a,Preclinical,CDK inhibitor,True,Repurposing Hub,CLINICAL-STAGE INHIBITOR,
+CCND1,arsenic-trioxide,Launched,apoptosis stimulant,False,Repurposing Hub,CLINICAL-STAGE INHIBITOR,
+NFRKB,,,,False,,CRISPR-ONLY,
+CSH2,,,,False,,CRISPR-ONLY,
+UROD,,,,False,,CRISPR-ONLY,
+SNAP23,,,,False,,CRISPR-ONLY,"SynLethDB partner of KRAS (High Throughput, Text Mining)"
+GPATCH1,,,,False,,CRISPR-ONLY,SynLethDB partner of KRAS (GenomeRNAi)
+SYVN1,,,,False,,CRISPR-ONLY,SynLethDB partner of KRAS (High Throughput)
+CHKA,RSM-932A,Phase 1,Choline kinase alpha inhibitor,True,ChEMBL (CHEMBL192986),CLINICAL-STAGE INHIBITOR,
+RAB1A,,,,False,,CRISPR-ONLY,
+YPEL5,,,,False,,CRISPR-ONLY,
+ACLY,bempedoic-acid,Launched,AMPK inhibitor,True,Repurposing Hub,CLINICAL-STAGE INHIBITOR,SynLethDB partner of KRAS (Text Mining)
+ACLY,BEMPEDOIC ACID,Launched,ATP-citrate synthase inhibitor,True,ChEMBL (CHEMBL3545313),CLINICAL-STAGE INHIBITOR,SynLethDB partner of KRAS (Text Mining)
+MBTPS2,,,,False,,CRISPR-ONLY,
+ANXA8L1,,,,False,,CRISPR-ONLY,

@@ -542,10 +542,71 @@ description = [
             {"default": 15, "description": "Neighbours examined per gene when looking for a druggable one", "name": "max_neighbours", "type": "int"},
             {"default": True, "description": "Run the TCGA PAAD log-rank test (needs cBioPortal)", "name": "include_survival", "type": "bool"},
             {"default": True, "description": "Fetch AlphaFold model confidence (needs UniProt and AlphaFold DB)", "name": "include_structure", "type": "bool"},
+            {"default": True, "description": "Report median GTEx expression in normal pancreas and flag toxicity risk above 50 TPM", "name": "include_gtex", "type": "bool"},
+            {"default": True, "description": "Query ClinicalTrials.gov for active Phase 1-3 trials in a pancreatic/KRAS context", "name": "include_trials", "type": "bool"},
+            {"default": True, "description": "Replicate the genotype contrast in the independent Sanger Project Score screen", "name": "include_sanger", "type": "bool"},
+            {"default": True, "description": "Run fpocket for a binding-pocket druggability score; without structure_paths the AlphaFold model is used, which has no ligands or partners", "name": "include_pockets", "type": "bool"},
+            {"default": True, "description": "Test each candidate's drugs and druggable neighbours for allele-selective sensitivity in the PRISM repurposing screen", "name": "include_prism", "type": "bool"},
+            {"default": None, "description": "Gene to experimental PDB path, e.g. {'RAB10': '9G0C_RAB10.pdb'}; preferred over AlphaFold when an experimental structure of the right chain exists", "name": "structure_paths", "type": "dict"},
             {"default": None, "description": "Write the per-candidate table to this CSV path", "name": "output_csv_path", "type": "str"},
         ],
         "required_parameters": [
             {"default": None, "description": "Genes to validate (list or comma-separated string)", "name": "candidate_genes", "type": "list[str]"},
+        ],
+    },
+    {
+        "description": "Replicate a genotype contrast in the Sanger Project Score CRISPR screen - an independent "
+        "library, cell panel and analysis pipeline, so a hit that survives it is not a Broad-specific artefact. "
+        "Returns the Sanger effect size per gene with a REPLICATED / NOT REPLICATED verdict against a Cohen's d "
+        "threshold. Needs Sanger_ProjectScore_corrected_logFC.parquet in the data lake.",
+        "name": "sanger_replication",
+        "optional_parameters": [
+            {"default": "KRAS", "description": "Driver gene defining the contrast", "name": "driver_gene", "type": "str"},
+            {"default": "G12D", "description": "Allele defining the altered arm", "name": "allele", "type": "str"},
+            {"default": None, "description": "Directory holding the Sanger matrix", "name": "data_lake_path", "type": "str"},
+            {"default": 3, "description": "Minimum lines per arm", "name": "min_group_size", "type": "int"},
+            {"default": -0.3, "description": "Cohen's d at or below which the effect counts as replicated", "name": "replication_d_threshold", "type": "float"},
+        ],
+        "required_parameters": [
+            {"default": None, "description": "Genes to test for replication", "name": "genes", "type": "list[str]"},
+        ],
+    },
+    {
+        "description": "Audit a filter cascade against known KRAS vulnerabilities (SOS1, EGFR, CDK4, CDK6, PRMT5, "
+        "TEAD1, YAP1, RAF1, AURKA, WEE1 by default) to estimate its false-negative rate. Reports the FIRST gate "
+        "each known gene fails, its drugs and active trials, and what the gene is established as - a calibration "
+        "statement about the gates, not a claim about the genes.",
+        "name": "benchmark_known_vulnerabilities",
+        "optional_parameters": [
+            {"default": None, "description": "Genes to audit; defaults to the curated KRAS benchmark set", "name": "benchmark_genes", "type": "list[str]"},
+            {"default": 0.05, "description": "Gate: BH q-value cutoff", "name": "q_threshold", "type": "float"},
+            {"default": -0.8, "description": "Gate: Cohen's d cutoff", "name": "min_cohens_d", "type": "float"},
+            {"default": 30.0, "description": "Gate: minimum percent of the altered arm that must be dependent", "name": "min_pct_mutant", "type": "float"},
+            {"default": 50.0, "description": "Gate: maximum percent of all screened lines that may be dependent", "name": "max_pct_all", "type": "float"},
+            {"default": None, "description": "Directory holding the drug tables", "name": "data_lake_path", "type": "str"},
+            {"default": False, "description": "Also query ClinicalTrials.gov per gene", "name": "include_trials", "type": "bool"},
+            {"default": None, "description": "Write the audit table to this CSV path", "name": "output_csv_path", "type": "str"},
+        ],
+        "required_parameters": [
+            {"default": None, "description": "Scan table from a discovery run (gene, effect_difference, cohens_d, q_value, pct_a_dependent, pct_all_dependent, pan_essential)", "name": "scan_csv_path", "type": "str"},
+        ],
+    },
+    {
+        "description": "Test whether a drug preferentially kills driver-allele cell lines in the PRISM "
+        "repurposing secondary screen - the pharmacological arm a CRISPR screen cannot supply, since a knockout "
+        "says the gene is required while a compound says the molecule works. Lower area under the dose-response "
+        "curve means more sensitive, so a negative delta means the allele lines are preferentially killed. Needs "
+        "PRISM_secondary_dose_response.csv in the data lake.",
+        "name": "prism_allele_sensitivity",
+        "optional_parameters": [
+            {"default": "KRAS", "description": "Driver gene defining the contrast", "name": "driver_gene", "type": "str"},
+            {"default": "G12D", "description": "Allele defining the altered arm", "name": "allele", "type": "str"},
+            {"default": None, "description": "Directory holding the PRISM table", "name": "data_lake_path", "type": "str"},
+            {"default": None, "description": "Optional genotype table overriding the default call source", "name": "mutation_csv_path", "type": "str"},
+            {"default": 3, "description": "Minimum cell lines per arm", "name": "min_group_size", "type": "int"},
+        ],
+        "required_parameters": [
+            {"default": None, "description": "Drug names to test (list or comma-separated string), as they appear in PRISM", "name": "drug_names", "type": "list[str]"},
         ],
     },
 ]
