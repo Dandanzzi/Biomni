@@ -1,0 +1,8 @@
+gene,drug,clinical_phase,moa,inhibitory,source,verdict,synlethdb
+KRAS,sotorasib (AMG 510),Launched,KRAS G12C covalent inhibitor,True,curated RAS set (2026-10),CLINICAL-STAGE INHIBITOR,
+KRAS,adagrasib (MRTX849),Launched,KRAS G12C covalent inhibitor,True,curated RAS set (2026-10),CLINICAL-STAGE INHIBITOR,
+KRAS,SOTORASIB,Launched,GTPase KRas inhibitor,True,ChEMBL (CHEMBL4535757),CLINICAL-STAGE INHIBITOR,
+KRAS,ADAGRASIB,Launched,GTPase KRas inhibitor,True,ChEMBL (CHEMBL4594350),CLINICAL-STAGE INHIBITOR,
+CFLAR,,,,False,,CRISPR-ONLY,SynLethDB partner of KRAS (Text Mining)
+UROD,,,,False,,CRISPR-ONLY,
+SCAP,,,,False,,CRISPR-ONLY,SynLethDB partner of KRAS (High Throughput)

@@ -506,6 +506,11 @@ def profile_pdac_driver_landscape(
         ).sort_values("min_arm", ascending=False)
     log.append("")
     log.append(
+        "NEXT TOOL TO CALL: for a driver marked UNDERPOWERED or UNTESTABLE, do not run a within-cohort "
+        "contrast - use `discover_sl_pan_cancer_with_context` (pools lineages, then re-checks in this cancer "
+        "type) or `discover_comutation_stratified_sl` (splits the driver-mutant lines by a second alteration)."
+    )
+    log.append(
         "RECOMMENDED_DRIVERS: "
         + ", ".join(
             f"{row['driver']} ({row['alteration']}, smaller arm n={int(row['min_arm'])})"

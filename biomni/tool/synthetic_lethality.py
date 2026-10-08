@@ -790,8 +790,9 @@ def discover_synthetic_lethal_candidates(
         log.append("")
         log.append(
             f"FAILURE: insufficient group sizes (mutant n={len(mutant_ids)}, wild-type n={len(wildtype_ids)}); "
-            "at least 3 per group are required. Broaden `cancer_type` (e.g. 'pan-cancer') or supply a "
-            "mutation table with wider coverage."
+            "at least 3 per group are required. NEXT TOOL TO CALL: `profile_pdac_driver_landscape` reports "
+            "which drivers this cohort can actually test, and `discover_sl_pan_cancer_with_context` runs the "
+            "contrast pan-cancer instead."
         )
         return "\n".join(log)
 
@@ -898,7 +899,10 @@ def discover_synthetic_lethal_candidates(
     if len(wildtype_ids) < 8:
         warnings.append(
             f"Low statistical power: only {len(wildtype_ids)} wild-type lines. p-values are unstable and a "
-            "single outlier line can drive a candidate; replicate in a pan-cancer or external cohort."
+            "single outlier line can drive a candidate. DO NOT present these candidates as findings on their "
+            "own. NEXT TOOL TO CALL: `discover_sl_pan_cancer_with_context` runs the same contrast pan-cancer, "
+            "where the wild-type arm is large enough, and then re-checks each candidate inside this cancer "
+            "type. `sanger_replication` tests them in an independent screen."
         )
     if len(unknown_ids):
         warnings.append(

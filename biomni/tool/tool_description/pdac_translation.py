@@ -1,6 +1,6 @@
 description = [
     {
-        "description": "Report which pancreatic cancer (PDAC) driver alterations actually split the DepMap cell "
+        "description": "CALL THIS FIRST, BEFORE committing a synthetic-lethality run to any driver. Report "
         "line cohort into two testable groups, before a synthetic lethality run is committed to a driver. Counts "
         "mutant/wild-type (or amplified/neutral, deleted/neutral) lines for each curated PDAC driver and labels "
         "the contrast TESTABLE, UNDERPOWERED or UNTESTABLE - KRAS is altered in most PDAC lines, so its "
@@ -446,8 +446,9 @@ description = [
         "required_parameters": [],
     },
     {
-        "description": "Discover driver-selective dependencies in a pan-cancer cohort, then check whether each "
-        "candidate is actually present in one cancer type. Use when the driver is near-universal in the cancer "
+        "description": "USE THIS INSTEAD OF a within-cancer-type contrast whenever the driver's wild-type arm "
+        "is small (fewer than ~8 lines). Discovers driver-selective dependencies in a pan-cancer cohort, then "
+        "checks whether each candidate is actually present in one cancer type. Required when the driver is near-universal in the cancer "
         "of interest and its wild-type arm is too small for a contrast (KRAS in PDAC: 40 mutant vs 4 wild-type, "
         "versus 47 vs 791 pan-cancer for G12D). Supports allele-specific arms, excludes other alleles of the same "
         "driver from both arms, re-tests every candidate with the mutant arm's dominant lineage removed so a "
