@@ -1,0 +1,10 @@
+driver,alteration,n_altered,n_control,n_unprofiled,altered_fraction,verdict,note
+SMAD4,deletion,26,10,11,0.7222222222222222,TESTABLE,both arms are large enough for a genome-wide contrast
+CDKN2A,deletion,23,13,11,0.6388888888888888,TESTABLE,both arms are large enough for a genome-wide contrast
+MYC,amplification,10,26,11,0.2777777777777778,TESTABLE,both arms are large enough for a genome-wide contrast
+KRAS,mutation,40,4,3,0.9090909090909091,UNDERPOWERED,both arms exist but the smaller is <8 lines; expect no gene to clear a genome-wide FDR
+TP53,deletion,5,31,11,0.1388888888888889,UNDERPOWERED,both arms exist but the smaller is <8 lines; expect no gene to clear a genome-wide FDR
+GATA6,amplification,4,32,11,0.1111111111111111,UNDERPOWERED,both arms exist but the smaller is <8 lines; expect no gene to clear a genome-wide FDR
+ERBB2,amplification,4,32,11,0.1111111111111111,UNDERPOWERED,both arms exist but the smaller is <8 lines; expect no gene to clear a genome-wide FDR
+AKT2,amplification,3,33,11,0.08333333333333333,UNDERPOWERED,both arms exist but the smaller is <8 lines; expect no gene to clear a genome-wide FDR
+CCNE1,amplification,2,34,11,0.05555555555555555,UNTESTABLE,one arm has <3 lines - a within-PDAC contrast is impossible; use a pan-cancer cohort or an isogenic model instead

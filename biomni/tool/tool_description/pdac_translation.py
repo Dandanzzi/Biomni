@@ -610,4 +610,36 @@ description = [
             {"default": None, "description": "Drug names to test (list or comma-separated string), as they appear in PRISM", "name": "drug_names", "type": "list[str]"},
         ],
     },
+    {
+        "description": "Score and rank synthetic lethal candidates by FIXED, EXPLICIT RULES and assign a "
+        "GO / HOLD / NO-GO verdict. Call this instead of judging candidates by reading the other tools' outputs: "
+        "it combines discovery statistics, independent Sanger replication, the effect inside the cancer type, "
+        "literature support, druggability, normal-tissue safety and confounder status into one score whose every "
+        "component, weight and cutoff is printed with the result. A CONFOUNDED verdict forces NO-GO and a failed "
+        "Sanger replication caps the verdict at HOLD. The caller should explain the computed verdict, not assign "
+        "a different grade, star rating or recommendation. REQUIRES two prerequisites: confounder results from "
+        "check_dependency_confounders and calibration from benchmark_known_vulnerabilities. Without either it "
+        "refuses to score and names the tool to run, so a verdict is never produced from partial evidence.",
+        "name": "score_sl_candidates",
+        "optional_parameters": [
+            {"default": "KRAS", "description": "Driver gene used for the Sanger and context contrasts", "name": "driver_gene", "type": "str"},
+            {"default": "G12D", "description": "Allele used for the Sanger and context contrasts", "name": "allele", "type": "str"},
+            {"default": None, "description": "{gene: 0-100} from validate_sl_candidates_with_pubmed; omitted genes score 0 without penalty", "name": "literature_scores", "type": "dict"},
+            {"default": None, "description": "Genes with a refuting PMID; each loses 5 points", "name": "refuting_genes", "type": "list[str]"},
+            {"default": None, "description": "Confounder results from check_dependency_confounders: either {gene: verdict} OR the raw report text, which is parsed automatically. A verdict containing CONFOUNDED forces NO-GO", "name": "confounder_verdicts", "type": "dict"},
+            {"default": True, "description": "Refuse to score without confounder results. A dependency explained by a paralog or lineage is not a synthetic lethal partner, so scoring without that check returns a verdict that looks final while the disqualifying test has not run. The failure message names the tool to call and how to pass its output back", "name": "require_confounder_check", "type": "bool"},
+            {"default": None, "description": "Calibration from benchmark_known_vulnerabilities: either the CSV path it wrote OR its raw report text, which is parsed automatically. Reports the false-negative rate beside the verdicts", "name": "benchmark_csv_path", "type": "str"},
+            {"default": True, "description": "Refuse to score without the benchmark calibration. A GO verdict says a gene is among the best this cascade found; without knowing how much known biology the same cascade rejects, that statement has no scale. The failure message names the tool to call and how to pass its output back", "name": "require_benchmark", "type": "bool"},
+            {"default": True, "description": "Compute the Sanger replication component", "name": "include_sanger", "type": "bool"},
+            {"default": True, "description": "Compute the GTEx normal-tissue safety component", "name": "include_gtex", "type": "bool"},
+            {"default": True, "description": "Compute the druggability component", "name": "include_drugs", "type": "bool"},
+            {"default": None, "description": "Directory holding the data files", "name": "data_lake_path", "type": "str"},
+            {"default": None, "description": "Optional genotype table overriding the default call source", "name": "mutation_csv_path", "type": "str"},
+            {"default": None, "description": "Write the scored table to this CSV path", "name": "output_csv_path", "type": "str"},
+        ],
+        "required_parameters": [
+            {"default": None, "description": "Genes to score (list or comma-separated string)", "name": "candidate_genes", "type": "list[str]"},
+            {"default": None, "description": "Scan table from the discovery run (output_csv_path of discover_sl_pan_cancer_with_context)", "name": "scan_csv_path", "type": "str"},
+        ],
+    },
 ]

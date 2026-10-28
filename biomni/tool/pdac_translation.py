@@ -3177,6 +3177,21 @@ def discover_sl_pan_cancer_with_context(
     )
 
     log.append("")
+    log.append("NEXT TOOLS TO CALL (these candidates are not yet validated)")
+    log.append(
+        "  1. `sanger_replication` - re-tests the same genotype contrast in the Sanger Project Score screen, an "
+        "independent library and cell panel. A candidate that does not replicate there is a single-screen artefact."
+    )
+    log.append(
+        "  2. `benchmark_known_vulnerabilities` - runs the same gates over established vulnerabilities of this "
+        "driver and reports how many they reject, which says whether this candidate list is precise or blind. "
+        "Pass the scan table written above as scan_csv_path."
+    )
+    log.append(
+        "  3. `score_sl_candidates` - once replication, literature and confounder results exist, computes the "
+        "GO / HOLD / NO-GO verdict from fixed rules. Do not assign a grade by hand."
+    )
+    log.append("")
     log.append("QC WARNINGS")
     log.append(
         f"  - Pooling lineages is what makes this test possible and is also its main threat: the mutant arm is "
@@ -4622,6 +4637,13 @@ def benchmark_known_vulnerabilities(
         os.makedirs(os.path.dirname(os.path.abspath(output_csv_path)), exist_ok=True)
         table.to_csv(output_csv_path, index=False)
         log.append(f"  Audit table written to {output_csv_path}")
+    log.append("")
+    log.append(
+        "NEXT TOOL TO CALL: `score_sl_candidates` turns the evidence collected so far - statistics, Sanger "
+        "replication, PDAC-restricted effect, literature, confounder status and druggability - into a GO / HOLD / "
+        "NO-GO verdict from fixed rules. Pass this audit as benchmark_csv_path so the false-negative rate is "
+        "reported beside the verdicts."
+    )
     return "\n".join(log)
 
 
@@ -4694,8 +4716,19 @@ def sanger_replication(
                         f"{len(wildtype_columns)} wild-type) after name matching"}
 
     frame = bundle["logfc"]
-    results = {"status": "computed", "n_allele": len(allele_columns), "n_wildtype": len(wildtype_columns),
-               "allele_lines": list(allele_columns), "genes": {}}
+    results = {
+        "status": "computed",
+        "n_allele": len(allele_columns),
+        "n_wildtype": len(wildtype_columns),
+        "allele_lines": list(allele_columns),
+        "genes": {},
+        "next_step": (
+            "Candidates marked NOT REPLICATED are single-screen artefacts and cannot reach GO. "
+            "NEXT TOOL TO CALL: `score_sl_candidates` combines this result with the statistics, literature and "
+            "confounder findings into a rule-based GO / HOLD / NO-GO verdict; `benchmark_known_vulnerabilities` "
+            "reports what the discovery gates reject, which calibrates how much the candidate list can claim."
+        ),
+    }
     for gene in _parse_gene_list(genes):
         if gene not in frame.index:
             results["genes"][gene] = {"status": "not in Sanger library"}
@@ -4923,3 +4956,425 @@ def prism_allele_sensitivity(
                         else "not selective" if np.isfinite(p) else "not testable"),
         }
     return results
+
+
+# ---------------------------------------------------------------------------
+# Rule-based candidate scoring: the verdict is computed, not narrated
+# ---------------------------------------------------------------------------
+# Every component, its weight and its cutoffs are stated here and printed with the result, so a
+# GO verdict can be traced to the numbers that produced it. An agent reading this output is meant
+# to explain the score, not to invent one of its own.
+SCORING_RULES = {
+    "statistics": {
+        "max": 30,
+        "rule": "q < 0.01 -> 30 | q < 0.05 -> 24 | q < 0.15 -> 15 | q < 0.25 -> 8 | else 0. "
+                "Cohen's d <= -0.8 keeps the full value; -0.8 < d <= -0.5 halves it; d > -0.5 zeroes it.",
+    },
+    "replication": {
+        "max": 25,
+        "rule": "Sanger REPLICATED -> 25 | NOT REPLICATED -> 0 and the candidate cannot reach GO | "
+                "no Sanger data -> 10 (neutral: absence of a test is not a failed test).",
+    },
+    "context": {
+        "max": 15,
+        "rule": "PDAC-restricted Cohen's d (allele vs all other PDAC lines): d <= -0.8 -> 15 | "
+                "d <= -0.5 -> 10 | d <= -0.3 -> 5 | d > -0.3 -> 0 (effect does not survive the cancer type).",
+    },
+    "literature": {
+        "max": 10,
+        "rule": "score/100 x 10, capped at 10. A gene with no literature scores 0 but is NOT penalised - "
+                "undocumented is not disproven. A refuting PMID subtracts 5.",
+    },
+    "druggability": {
+        "max": 10,
+        "rule": "clinical-stage inhibitor -> 10 | preclinical probe -> 5 | druggable 1-hop neighbour -> 3 | "
+                "nothing -> 0 (a CRISPR-only target is still a valid experiment).",
+    },
+    "safety": {
+        "max": 0,
+        "rule": "GTEx normal pancreas TPM > 50 -> -10 (therapeutic window must be shown first).",
+    },
+    "confounder": {
+        "max": 0,
+        "rule": "check_dependency_confounders verdict CONFOUNDED -> -40 and the candidate is forced to NO-GO. "
+                "PARALOG-CONFOUNDED is treated the same way.",
+    },
+}
+GO_THRESHOLD = 70
+HOLD_THRESHOLD = 45
+
+
+def _parse_confounder_report(report: str) -> dict:
+    """Read the SUMMARY block of a check_dependency_confounders report into {gene: verdict}.
+
+    Accepting the raw report removes a transcription step: the caller passes the text it already
+    has instead of copying verdicts out by hand, where a gene can be dropped or mislabelled.
+    """
+    import re
+
+    verdicts = {}
+    in_summary = False
+    for line in report.splitlines():
+        if line.strip() == "SUMMARY":
+            in_summary = True
+            continue
+        if in_summary:
+            if not line.strip() or line.startswith(("PROVENANCE", "QC", "=")):
+                break
+            match = re.match(r"^\s{2}([A-Z0-9][A-Z0-9\-\.]*)\s{2,}(.+)$", line)
+            if match:
+                verdicts[match.group(1).upper()] = match.group(2).strip()
+    return verdicts
+
+
+def _parse_benchmark_report(report: str) -> dict:
+    """Read the CALIBRATION block of a benchmark_known_vulnerabilities report.
+
+    Accepting the raw report, like the confounder parser does, means the caller passes the text it
+    already has instead of restating the rate in its own words, where a number can drift.
+    """
+    import re
+
+    audited = re.search(r"Known vulnerabilities audited:\s*(\d+)", report)
+    passing = re.search(r"Passing the full cascade:\s*(\d+)", report)
+    rate = re.search(r"false-negative rate on this benchmark:\s*([\d.]+)%", report)
+    if not (audited and passing):
+        return {}
+    return {
+        "n_audited": int(audited.group(1)),
+        "n_passing": int(passing.group(1)),
+        "false_negative_rate": float(rate.group(1)) / 100 if rate else
+        1 - int(passing.group(1)) / max(int(audited.group(1)), 1),
+    }
+
+
+def _score_component(name: str, value, detail: str = "") -> dict:
+    return {"component": name, "points": value, "detail": detail}
+
+
+def score_sl_candidates(
+    candidate_genes,
+    scan_csv_path: str,
+    driver_gene: str = "KRAS",
+    allele: str = "G12D",
+    literature_scores: dict | None = None,
+    refuting_genes=None,
+    confounder_verdicts=None,
+    require_confounder_check: bool = True,
+    benchmark_csv_path: str | None = None,
+    require_benchmark: bool = True,
+    include_sanger: bool = True,
+    include_gtex: bool = True,
+    include_drugs: bool = True,
+    data_lake_path: str | None = None,
+    mutation_csv_path: str | None = None,
+    output_csv_path: str | None = None,
+) -> str:
+    """Score and rank synthetic lethal candidates by explicit rules, and assign GO / HOLD / NO-GO.
+
+    This exists because a verdict read off a pile of outputs is not reproducible: two readers, or
+    the same reader twice, weigh the evidence differently, and nothing records which number drove
+    the call. Here every component, weight and cutoff is fixed in ``SCORING_RULES``, printed with
+    the result, and applied the same way to every gene. The score is computed from the evidence the
+    other tools produced - statistics, independent replication in Sanger, effect inside the cancer
+    type, literature, druggability, normal-tissue safety and confounder status.
+
+    Two rules override the total, because they are disqualifying rather than merely negative:
+    a CONFOUNDED verdict forces NO-GO, and a candidate that fails Sanger replication cannot reach GO.
+
+    Parameters
+    ----------
+    candidate_genes : list[str] | str
+        Genes to score, e.g. the CANDIDATE_GENES line of a discovery run.
+    scan_csv_path : str
+        Scan table from the discovery run (needs gene, effect_difference, cohens_d, q_value).
+    driver_gene, allele : str, optional
+        Genotype used for the Sanger and PDAC-restricted contrasts (default: KRAS G12D).
+    literature_scores : dict, optional
+        {gene: 0-100} from validate_sl_candidates_with_pubmed. Omitted genes score 0 without penalty.
+    refuting_genes : list[str] | str, optional
+        Genes with a refuting PMID; each loses 5 points.
+    confounder_verdicts : dict | str, optional
+        Confounder results from ``check_dependency_confounders``: either {gene: verdict} or the raw
+        report text, which is parsed here. A verdict containing "CONFOUNDED" forces NO-GO.
+    require_confounder_check : bool, optional
+        Refuse to score without confounder results (default: True). A candidate whose dependency is
+        explained by a paralog or a lineage is not a synthetic lethal partner, and a verdict computed
+        without that check reads as final while missing the one result that can disqualify it. Set to
+        False only when the check has been run elsewhere and is deliberately being skipped.
+    benchmark_csv_path : str, optional
+        Calibration from ``benchmark_known_vulnerabilities``: either the CSV path it wrote or its raw
+        report text, which is parsed here. Reports the pipeline's false-negative rate beside the
+        verdicts - it does not change any individual score.
+    require_benchmark : bool, optional
+        Refuse to score without that calibration (default: True). A GO verdict states that a gene is
+        among the best this cascade found; without knowing how much of the known biology the same
+        cascade rejects, that statement has no scale. Set to False only when the audit was run
+        elsewhere and is deliberately being skipped.
+    include_sanger, include_gtex, include_drugs : bool, optional
+        Compute those components (default: True).
+    data_lake_path, mutation_csv_path : str, optional
+        Data directory and an optional genotype table.
+    output_csv_path : str, optional
+        Write the scored table to this CSV path.
+
+    Returns
+    -------
+    str
+        The rule table, a per-candidate score breakdown, a ranked verdict table and
+        CANDIDATE_SCORES lines. The verdict is computed here; a caller should explain it, not revise it.
+
+    """
+    import numpy as np
+    import pandas as pd
+
+    genes = _parse_gene_list(candidate_genes)
+    if not genes:
+        return "FAILURE: no candidate gene was supplied."
+    scan = _read_optional_csv(scan_csv_path)
+    if scan is None:
+        return f"FAILURE: {scan_csv_path} not found. Pass the output_csv_path of the discovery run."
+
+    literature_scores = {k.upper(): v for k, v in (literature_scores or {}).items()}
+    if isinstance(confounder_verdicts, str):
+        confounder_verdicts = _parse_confounder_report(confounder_verdicts)
+    confounder_verdicts = {k.upper(): str(v) for k, v in (confounder_verdicts or {}).items()}
+    refuting = {g.upper() for g in _parse_gene_list(refuting_genes)}
+
+    # Calibration input may arrive as a CSV path or as the report text itself.
+    benchmark_summary = {}
+    if benchmark_csv_path and "\n" in str(benchmark_csv_path):
+        benchmark_summary = _parse_benchmark_report(str(benchmark_csv_path))
+        benchmark_csv_path = None
+    elif benchmark_csv_path:
+        audit = _read_optional_csv(benchmark_csv_path)
+        if audit is not None:
+            tested = audit[audit["verdict"] != "NOT IN SCREEN"]
+            passed = tested[tested["verdict"] == "PASSES ALL GATES"]
+            benchmark_summary = {
+                "n_audited": len(tested), "n_passing": len(passed),
+                "false_negative_rate": 1 - len(passed) / max(len(tested), 1),
+            }
+
+    # Both prerequisites are reported together so the caller can satisfy them in one step instead of
+    # discovering the second only after fixing the first.
+    unmet = []
+    missing_confounder = [g for g in genes if g not in confounder_verdicts]
+    if require_confounder_check and missing_confounder:
+        unmet.append(
+            f"1. CONFOUNDER CHECK missing for {', '.join(missing_confounder)}.\n"
+            "   A dependency explained by a paralog loss or a lineage is not a synthetic lethal partner, and\n"
+            "   that is the one result that can disqualify a candidate outright.\n"
+            "       from biomni.tool.synthetic_lethality import check_dependency_confounders\n"
+            f"       confounder_report = check_dependency_confounders('{driver_gene.upper()}', "
+            f"{list(genes)}, cancer_type='pan-cancer')"
+        )
+    if require_benchmark and not benchmark_summary:
+        unmet.append(
+            "2. BENCHMARK CALIBRATION missing.\n"
+            "   A GO verdict says a gene is among the best this cascade found. Without knowing how much of\n"
+            "   the known biology the same cascade rejects, that statement has no scale.\n"
+            "       from biomni.tool.pdac_translation import benchmark_known_vulnerabilities\n"
+            f"       benchmark_report = benchmark_known_vulnerabilities('{scan_csv_path}')"
+        )
+    if unmet:
+        return (
+            "FAILURE: cannot score - required evidence is missing.\n\n"
+            + "\n\n".join(unmet)
+            + "\n\nTHEN CALL THIS TOOL AGAIN, passing the raw outputs straight through:\n"
+            "    score_sl_candidates(\n"
+            f"        {list(genes)},\n"
+            f"        scan_csv_path='{scan_csv_path}',\n"
+            "        confounder_verdicts=confounder_report,   # raw report text is accepted\n"
+            "        benchmark_csv_path=benchmark_report,     # raw report text is accepted\n"
+            "    )\n\n"
+            "Both arguments take the tool output as it is. Do not summarise, re-type or paraphrase the\n"
+            "results - pass the text through so the numbers in the verdict are the numbers the tools produced."
+        )
+
+    log = [
+        "=" * 78,
+        f"RULE-BASED CANDIDATE SCORING - {len(genes)} candidate(s), {driver_gene.upper()} {allele}",
+        f"Run at {datetime.now(tz=_UTC).strftime('%Y-%m-%d %H:%M UTC')}",
+        "=" * 78,
+        "",
+        "SCORING RULES (fixed; the same rules are applied to every gene)",
+    ]
+    for name, spec in SCORING_RULES.items():
+        log.append(f"  {name:<14} max {spec['max']:>3}   {spec['rule']}")
+    log.append(f"  VERDICT        GO >= {GO_THRESHOLD} | HOLD >= {HOLD_THRESHOLD} | otherwise NO-GO. "
+               "CONFOUNDED forces NO-GO; failed Sanger replication caps the verdict at HOLD.")
+
+    sanger = sanger_replication(genes, driver_gene, allele, data_lake_path) if include_sanger else {"status": "skipped"}
+    if include_sanger:
+        log.append("")
+        if sanger.get("status") == "computed":
+            log.append(f"Sanger cohort: {sanger['n_allele']} {allele} vs {sanger['n_wildtype']} wild-type lines")
+        else:
+            log.append(f"Sanger replication unavailable ({sanger.get('note', sanger.get('status'))}) - "
+                       "every candidate takes the neutral 10 points for that component")
+
+    try:
+        bundle = _load_depmap(data_lake_path)
+    except FileNotFoundError as e:
+        return f"FAILURE: {e}"
+    hub = _load_repurposing_hub(data_lake_path)
+    hub_table = hub["table"] if hub is not None else None
+
+    rows = []
+    for gene in genes:
+        parts, total = [], 0.0
+        match = scan[scan["gene"].astype(str).str.upper() == gene]
+        if len(match) == 0:
+            rows.append({"gene": gene, "total": np.nan, "verdict": "NOT IN SCAN"})
+            continue
+        row = match.iloc[0]
+        q = float(row["q_value"])
+        d = float(row["cohens_d"])
+
+        # statistics
+        base = 30 if q < 0.01 else 24 if q < 0.05 else 15 if q < 0.15 else 8 if q < 0.25 else 0
+        factor = 1.0 if d <= -0.8 else 0.5 if d <= -0.5 else 0.0
+        stat_points = base * factor
+        parts.append(_score_component("statistics", stat_points, f"q={q:.4f}, d={d:.2f}"))
+        total += stat_points
+
+        # independent replication
+        record = (sanger.get("genes", {}) or {}).get(gene, {})
+        verdict_s = record.get("verdict", "no data")
+        if verdict_s == "REPLICATED":
+            rep_points, rep_detail = 25, f"Sanger d={record['cohens_d']:.2f}"
+        elif verdict_s == "NOT REPLICATED":
+            rep_points, rep_detail = 0, f"Sanger d={record['cohens_d']:.2f} - cannot reach GO"
+        else:
+            rep_points, rep_detail = 10, "no Sanger data (neutral)"
+        parts.append(_score_component("replication", rep_points, rep_detail))
+        total += rep_points
+
+        # effect inside the cancer type
+        effect = _pdac_restricted_effect(gene, bundle, allele, mutation_csv_path)
+        context_d = effect.get("vs_other_pdac", {}).get("cohens_d", np.nan) if effect else np.nan
+        if np.isfinite(context_d):
+            ctx_points = 15 if context_d <= -0.8 else 10 if context_d <= -0.5 else 5 if context_d <= -0.3 else 0
+            ctx_detail = f"PDAC-restricted d={context_d:.2f}"
+        else:
+            ctx_points, ctx_detail = 0, "not computable"
+        parts.append(_score_component("context", ctx_points, ctx_detail))
+        total += ctx_points
+
+        # literature
+        lit = float(literature_scores.get(gene, 0))
+        lit_points = min(lit / 100 * 10, 10)
+        if gene in refuting:
+            lit_points -= 5
+        parts.append(_score_component("literature", lit_points,
+                                      f"score {lit:.0f}/100" + (", refuting PMID" if gene in refuting else "")))
+        total += lit_points
+
+        # druggability
+        drug_points, drug_detail = 0, "no compound"
+        if include_drugs:
+            drugs = _drugs_from_curated(gene)
+            if hub_table is not None:
+                drugs += hub_table[hub_table["gene"] == gene].to_dict("records")
+            inhibitors = [x for x in drugs if _is_inhibitory(x.get("moa", ""))]
+            clinical = [x for x in inhibitors if x["phase_rank"] >= 2]
+            if clinical:
+                drug_points, drug_detail = 10, f"clinical: {clinical[0]['drug']}"
+            elif inhibitors:
+                drug_points, drug_detail = 5, f"preclinical: {inhibitors[0]['drug']}"
+            else:
+                for partner, _score in _string_neighbours(gene, 0.7, 10):
+                    partner_drugs = _drugs_from_curated(partner)
+                    if hub_table is not None:
+                        partner_drugs += hub_table[hub_table["gene"] == partner].to_dict("records")
+                    if any(x["phase_rank"] >= 2 and _is_inhibitory(x.get("moa", "")) for x in partner_drugs):
+                        drug_points, drug_detail = 3, f"druggable neighbour: {partner}"
+                        break
+        parts.append(_score_component("druggability", drug_points, drug_detail))
+        total += drug_points
+
+        # normal-tissue safety
+        safety_points, safety_detail = 0, "not checked"
+        if include_gtex:
+            gtex = _gtex_pancreas_tpm(gene, data_lake_path)
+            if gtex.get("status") == "computed":
+                safety_points = -10 if gtex["toxicity_flag"] else 0
+                safety_detail = f"{gtex['median_tpm']} TPM normal pancreas"
+        parts.append(_score_component("safety", safety_points, safety_detail))
+        total += safety_points
+
+        # confounder - disqualifying
+        confounder = confounder_verdicts.get(gene, "")
+        confounded = "CONFOUNDED" in confounder.upper()
+        conf_points = -40 if confounded else 0
+        parts.append(_score_component("confounder", conf_points, confounder or "not checked"))
+        total += conf_points
+
+        if confounded:
+            verdict = "NO-GO (confounded)"
+        elif total >= GO_THRESHOLD and verdict_s != "NOT REPLICATED":
+            verdict = "GO"
+        elif total >= HOLD_THRESHOLD:
+            verdict = "HOLD"
+        else:
+            verdict = "NO-GO"
+
+        rows.append({
+            "gene": gene, "total": round(total, 1), "verdict": verdict,
+            "q_value": q, "cohens_d": d, "sanger_verdict": verdict_s,
+            "sanger_d": record.get("cohens_d", np.nan),
+            "pdac_restricted_d": context_d, "literature_score": lit,
+            "confounder": confounder or "not checked", "drug_status": drug_detail,
+            "breakdown": "; ".join(f"{p['component']} {p['points']:+.0f}" for p in parts),
+        })
+
+        log.append("")
+        log.append(f"### {gene}  —  {total:.1f} / 100  →  {verdict}")
+        for part in parts:
+            log.append(f"    {part['component']:<14}{part['points']:>+6.1f}   {part['detail']}")
+
+    table = pd.DataFrame(rows).sort_values("total", ascending=False, na_position="last")
+    log.append("")
+    log.append("RANKED VERDICTS")
+    log.append(f"{'rank':<5}{'gene':<10}{'score':>7}{'q':>9}{'d':>7}{'Sanger':>16}{'PDAC d':>8}  verdict")
+    log.append("-" * 80)
+    for index, (_, row) in enumerate(table.iterrows(), 1):
+        if row["verdict"] == "NOT IN SCAN":
+            log.append(f"{index:<5}{row['gene']:<10}{'n/a':>7}{'':>9}{'':>7}{'':>16}{'':>8}  NOT IN SCAN")
+            continue
+        log.append(
+            f"{index:<5}{row['gene']:<10}{row['total']:>7.1f}{row['q_value']:>9.4f}{row['cohens_d']:>7.2f}"
+            f"{row['sanger_verdict']:>16}{row['pdac_restricted_d']:>8.2f}  {row['verdict']}"
+        )
+
+    if benchmark_summary:
+        log.append("")
+        log.append("CALIBRATION CONTEXT (from the benchmark audit; does not change any score above)")
+        log.append(
+            f"  Known vulnerabilities audited: {benchmark_summary['n_audited']} | passing the discovery "
+            f"cascade: {benchmark_summary['n_passing']} | estimated false-negative rate: "
+            f"{benchmark_summary['false_negative_rate']:.0%}"
+        )
+        log.append("  A high rate means the candidate list is tuned for precision: genes missing from it are "
+                   "not thereby excluded, and a GO here is a statement about this list, not about the biology "
+                   "the list could not see.")
+
+    log.append("")
+    for _, row in table.iterrows():
+        if row["verdict"] != "NOT IN SCAN":
+            log.append(f"CANDIDATE_SCORES: {row['gene']} | {row['total']:.1f} | {row['verdict']} | "
+                       f"{row['breakdown']}")
+
+    log.append("")
+    log.append("HOW TO USE THIS OUTPUT")
+    log.append("  The verdicts above are computed from the fixed rules at the top of this report. Explain them "
+               "and the evidence behind them; do not assign a different grade, star rating or recommendation.")
+    log.append("  Components that could not be computed are shown as such and were scored neutrally rather than "
+               "being guessed at.")
+
+    if output_csv_path:
+        os.makedirs(os.path.dirname(os.path.abspath(output_csv_path)), exist_ok=True)
+        table.to_csv(output_csv_path, index=False)
+        log.append(f"  Scored table written to {output_csv_path}")
+    return "\n".join(log)

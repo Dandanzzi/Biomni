@@ -1,0 +1,2 @@
+gene,pdac_d_vs_wt,pdac_d_vs_other,kras_axis,tcga_survival,tcga_logrank_p,n_direct_inhibitors,n_clinical_inhibitors,druggable_neighbours,chembl_class,mean_plddt,sanger_d,sanger_verdict,gtex_pancreas_tpm,gtex_toxicity_flag,n_active_trials,top_trial,fpocket_druggability,fpocket_verdict,fpocket_volume,fpocket_coherent,prism_selective_drugs
+DOCK5,-1.3980707344266947,-0.8222329960858251,RAC1/cytoskeleton,not significant,0.1372145334771978,0,0,,,78.9,-1.0815460291980468,REPLICATED,2.45,False,0,,0.347,NO DRUGGABLE POCKET,668.884,False,

@@ -1,0 +1,4 @@
+gene,total,verdict,q_value,cohens_d,sanger_verdict,sanger_d,pdac_restricted_d,literature_score,confounder,drug_status,breakdown
+KRAS,89.5,GO,1.3509336034230556e-12,-2.4716595729858524,REPLICATED,-2.711726241851043,-0.9308681062380411,95.0,DRIVER-CONSISTENT,clinical: sotorasib (AMG 510),statistics +30; replication +25; context +15; literature +10; druggability +10; safety +0; confounder +0
+DOCK5,70.0,GO,0.001583661479762,-1.146824399651564,REPLICATED,-1.0815460291980468,-0.8222329960858251,0.0,DRIVER-CONSISTENT,no compound,statistics +30; replication +25; context +15; literature +0; druggability +0; safety +0; confounder +0
+CFLAR,44.2,NO-GO,0.1200209457014605,-0.5080691280062231,REPLICATED,-0.4186001736890926,0.15648943487498507,87.0,UNEXPLAINED,druggable neighbour: TNFSF10,statistics +8; replication +25; context +0; literature +9; druggability +3; safety +0; confounder +0

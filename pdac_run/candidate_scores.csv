@@ -1,0 +1,5 @@
+gene,total,verdict,q_value,cohens_d,sanger_verdict,sanger_d,pdac_restricted_d,literature_score,confounder,drug_status,breakdown
+DOCK5,70.0,GO,0.001583661479762,-1.146824399651564,REPLICATED,-1.0815460291980468,-0.8222329960858251,0.0,not checked,no compound,statistics +30; replication +25; context +15; literature +0; druggability +0; safety +0; confounder +0
+KLF5,42.0,NO-GO,0.0448653518324825,-0.7536677422121356,REPLICATED,-0.678317722805237,-0.20598927731359767,70.0,not checked,druggable neighbour: EP300,statistics +12; replication +25; context +0; literature +2; druggability +3; safety +0; confounder +0
+PIK3CA,26.9,NO-GO,0.1265497812064701,-0.5132956485796559,NOT REPLICATED,-0.2746132694071542,0.04310753043634522,94.0,not checked,clinical: alpelisib,statistics +8; replication +0; context +0; literature +9; druggability +10; safety +0; confounder +0
+RAB10,15.1,NO-GO (confounded),0.0133343610747542,-0.8544806500705504,REPLICATED,-0.6213504761577029,-0.08280016572280693,31.0,CONFOUNDED - paralog VPS4B,druggable neighbour: SLC2A4,statistics +24; replication +25; context +0; literature +3; druggability +3; safety +0; confounder -40
